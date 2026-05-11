@@ -1,0 +1,89 @@
+flowchart LR
+    %% -------------------------
+    %% Control Plane
+    %% -------------------------
+    subgraph OPS[Control Plane]
+        direction TB
+        OP1["Operator / Scheduler"]
+        OP2["Pre-check Suite<br/>keyvault_secret_test<br/>sql_connection_test<br/>sharepoint_auth_test<br/>spn_healthcheck_test"]
+        OP3["Ingestion Runner<br/>python -m src.main"]
+    end
+
+    %% -------------------------
+    %% DEV Environment
+    %% -------------------------
+    subgraph DEV[DEV Subscription / Environment]
+        direction TB
+        DEVKV["[AKV] Azure Key Vault<br/>dev secrets"]
+        DEVSP["[SP] SharePoint Online<br/>/sites/data_ingest_dev"]
+        DEVSQ[("[SQL] SQL Server ingest_dev")]
+        DEVCFG[("config.sharepoint_ingestion")]
+        DEVLOG[("log.sharepoint_ingestion_audit")]
+    end
+
+    %% -------------------------
+    %% PROD Environment
+    %% -------------------------
+    subgraph PROD[PROD Subscription / Environment]
+        direction TB
+        PRODKV["[AKV] Azure Key Vault<br/>prod secrets"]
+        PRODSP["[SP] SharePoint Online<br/>prod site collection"]
+        PRODSQ[("[SQL] SQL Server ingest_prod")]
+        PRODCFG[("config.sharepoint_ingestion")]
+        PRODLOG[("log.sharepoint_ingestion_audit")]
+    end
+
+    %% -------------------------
+    %% Identity / Trust overlay
+    %% -------------------------
+    ENTRA["Microsoft Entra ID<br/>App Registration / SPN"]
+
+    OP1 --> OP2
+    OP1 --> OP3
+
+    %% Pre-check data plane (DEV)
+    OP2 -->|"--env dev"| DEVKV
+    OP2 -->|"--env dev"| DEVSP
+    OP2 -->|"--env dev"| DEVSQ
+
+    %% Runtime data plane (DEV)
+    OP3 -->|"HTTPS 443"| DEVKV
+    OP3 -->|"HTTPS 443"| DEVSP
+    OP3 -->|"TCP 1433"| DEVSQ
+    OP3 -->|"read"| DEVCFG
+    OP3 -->|"write"| DEVLOG
+
+    %% Pre-check data plane (PROD)
+    OP2 -->|"--env prod"| PRODKV
+    OP2 -->|"--env prod"| PRODSP
+    OP2 -->|"--env prod"| PRODSQ
+
+    %% Runtime data plane (PROD)
+    OP3 -->|"HTTPS 443"| PRODKV
+    OP3 -->|"HTTPS 443"| PRODSP
+    OP3 -->|"TCP 1433"| PRODSQ
+    OP3 -->|"read"| PRODCFG
+    OP3 -->|"write"| PRODLOG
+
+    %% Identity trust paths
+    ENTRA -. OAuth / app trust .-> DEVSP
+    ENTRA -. OAuth / app trust .-> PRODSP
+    ENTRA -. client credentials .-> DEVKV
+    ENTRA -. client credentials .-> PRODKV
+
+    %% -------------------------
+    %% Visual style (Visio/Azure-like cards)
+    %% -------------------------
+    classDef ctrl fill:#FFF4CE,stroke:#C8A951,stroke-width:1.5px,color:#1f1f1f;
+    classDef svc fill:#F7FBFF,stroke:#5B9BD5,stroke-width:1.5px,color:#1f1f1f;
+    classDef db fill:#FFFFFF,stroke:#2F5597,stroke-width:1.7px,color:#1f1f1f;
+    classDef ident fill:#EFEAFE,stroke:#7E57C2,stroke-width:1.5px,color:#1f1f1f;
+
+    class OP1,OP2,OP3 ctrl;
+    class DEVKV,DEVSP,PRODKV,PRODSP svc;
+    class DEVSQ,PRODSQ,DEVCFG,DEVLOG,PRODCFG,PRODLOG db;
+    class ENTRA ident;
+
+    style OPS fill:#E2F0D9,stroke:#70AD47,stroke-width:2px,color:#1f1f1f;
+    style DEV fill:#EAF3FF,stroke:#5B9BD5,stroke-width:2px,color:#1f1f1f;
+    style PROD fill:#FDEDEE,stroke:#C0504D,stroke-width:2px,color:#1f1f1f;

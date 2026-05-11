@@ -1,0 +1,4 @@
+CustomerName,SignupDate,CreditLimit
+No ID Customer,2025-01-01,1000.0
+,2025-01-02,1001.0
+Null Date Customer,,1002.0

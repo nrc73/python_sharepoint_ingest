@@ -1,0 +1,41 @@
+sequenceDiagram
+    autonumber
+    actor Ops as Operator / Scheduler
+    participant Py as Python runner (src.main)
+    participant AKV as Azure Key Vault
+    participant SP as SharePoint Online
+    participant SQL as SQL Server
+
+    Ops->>Py: Start ingestion run (--env dev|prod)
+
+    Py->>AKV: HTTPS 443 - Resolve runtime secrets/config
+    AKV-->>Py: Environment credential set
+
+    Py->>SQL: TCP 1433 - Read config.sharepoint_ingestion
+    SQL-->>Py: Active ingestion configs
+
+    loop per configured SharePoint folder / file pattern
+        Py->>SP: HTTPS 443 - List files
+        SP-->>Py: File metadata list
+
+        loop each matching file
+            Py->>SP: HTTPS 443 - Download file payload
+            SP-->>Py: CSV/Excel bytes
+
+            Py->>SQL: TCP 1433 - Load/append/merge into target table
+            SQL-->>Py: DML outcome
+
+            Py->>SQL: TCP 1433 - Insert audit row to log.sharepoint_ingestion_audit
+            SQL-->>Py: Audit insert result
+
+            alt Success
+                Py->>SP: HTTPS 443 - Move file to archive folder
+                SP-->>Py: Move success
+            else Failure
+                Py->>SP: HTTPS 443 - Move file to failed folder
+                SP-->>Py: Move success/failure
+            end
+        end
+    end
+
+    Py-->>Ops: Summary + exit code

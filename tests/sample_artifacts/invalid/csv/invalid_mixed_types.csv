@@ -1,0 +1,4 @@
+RecordId,Amount,EffectiveDate,Quantity
+R001,10.5,2025-01-31,1
+R002,ABC,31/01/2025,2
+R003,2025-03-01,not-a-date,x

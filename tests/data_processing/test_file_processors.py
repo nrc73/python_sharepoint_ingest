@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+from io import BytesIO
+
+import pandas as pd
+
+from src.file_processors.csv_processor import iter_csv_chunks_from_buffer, read_csv_from_bytes
+from src.file_processors.excel_processor import read_all_excel_sheets_from_bytes, read_excel_from_bytes
+
+
+def test_read_csv_from_bytes() -> None:
+    payload = b"col1,col2\n1,2\n3,4\n"
+    df = read_csv_from_bytes(payload)
+    assert list(df.columns) == ["col1", "col2"]
+    assert len(df) == 2
+
+
+def test_iter_csv_chunks_from_buffer() -> None:
+    payload = b"col1,col2\n1,2\n3,4\n5,6\n"
+    chunks = list(iter_csv_chunks_from_buffer(BytesIO(payload), chunk_size=2))
+    assert len(chunks) == 2
+    assert list(chunks[0]["col1"]) == [1, 3]
+    assert list(chunks[1]["col1"]) == [5]
+
+
+def test_iter_csv_chunks_from_buffer_honors_skiprows() -> None:
+    payload = b"ignore,this\ncol1,col2\n1,2\n3,4\n"
+    chunks = list(iter_csv_chunks_from_buffer(BytesIO(payload), header_skip_rows=1, chunk_size=1))
+    assert len(chunks) == 2
+    assert list(chunks[0].columns) == ["col1", "col2"]
+    assert list(chunks[0]["col1"]) == [1]
+
+
+def test_read_excel_single_sheet_from_bytes() -> None:
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        pd.DataFrame({"a": [1, 2]}).to_excel(writer, sheet_name="DATA", index=False)
+    payload = out.getvalue()
+
+    df = read_excel_from_bytes(payload, sheet_name="DATA")
+    assert list(df.columns) == ["a"]
+    assert len(df) == 2
+
+
+def test_read_excel_all_sheets_from_bytes() -> None:
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        pd.DataFrame({"a": [1]}).to_excel(writer, sheet_name="S1", index=False)
+        pd.DataFrame({"a": [2]}).to_excel(writer, sheet_name="S2", index=False)
+    payload = out.getvalue()
+
+    all_sheets = read_all_excel_sheets_from_bytes(payload)
+    assert set(all_sheets.keys()) == {"S1", "S2"}

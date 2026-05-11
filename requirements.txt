@@ -1,0 +1,10 @@
+azure-identity>=1.17.1
+azure-keyvault-secrets>=4.8.0
+msal>=1.29.0
+requests>=2.32.3
+pandas>=2.2.2
+openpyxl>=3.1.2
+python-dotenv>=1.0.1
+SQLAlchemy>=2.0.31
+pyodbc>=5.1.0
+pytest>=8.2.2

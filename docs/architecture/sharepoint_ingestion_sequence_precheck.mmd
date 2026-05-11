@@ -1,0 +1,22 @@
+sequenceDiagram
+    autonumber
+    actor Ops as Operator / Scheduler
+    participant Py as Python pre-check scripts
+    participant AKV as Azure Key Vault
+    participant SP as SharePoint Online
+    participant SQL as SQL Server (ingest_dev / ingest_prod)
+
+    Note over Py: Run with --env dev, --env prod, or --env all
+
+    Ops->>Py: Execute pre-check scripts
+
+    Py->>AKV: HTTPS 443 - Retrieve secret set (per env)
+    AKV-->>Py: SP client_id/client_secret/tenant_id, SQL credentials/settings
+
+    Py->>SP: HTTPS 443 - Authenticate app + test folder listing
+    SP-->>Py: Auth result + file count / error
+
+    Py->>SQL: TCP 1433 (TDS) - Open connection + SELECT 1
+    SQL-->>Py: Connection/login result
+
+    Py-->>Ops: Consolidated pass/fail by environment
