@@ -255,7 +255,10 @@ class SharePointClient:
         )
         item_id: str = item_meta["id"]
 
-        # Move: PATCH the item's parentReference
+        # Move: PATCH the item's parentReference.
+        # "@microsoft.graph.conflictBehavior": "replace" ensures the move
+        # succeeds even when a same-named file already exists at the destination
+        # (e.g. on a re-run after a previous partial failure).
         self._patch_json(
             f"{_GRAPH_BASE}/drives/{src_drive_id}/items/{item_id}",
             {
@@ -264,6 +267,7 @@ class SharePointClient:
                     "path": f"/drive/root:{dest_path}",
                 },
                 "name": file_name,
+                "@microsoft.graph.conflictBehavior": "replace",
             },
         )
 

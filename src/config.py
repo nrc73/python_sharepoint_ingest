@@ -167,7 +167,7 @@ def load_settings(env_override: Optional[str] = None) -> AppSettings:
     return AppSettings(
         env_name=env_name,
         log_level=os.getenv("LOG_LEVEL", "INFO"),
-        default_load_strategy=os.getenv("DEFAULT_LOAD_STRATEGY", "truncate_reload"),
+        default_load_strategy=os.getenv("DEFAULT_LOAD_STRATEGY", "TRUNCATE"),
         default_file_pattern=os.getenv("DEFAULT_FILE_PATTERN", "*"),
         null_alert_threshold=float(os.getenv("NULL_ALERT_THRESHOLD", "0.90")),
         enable_chunked_csv=_as_bool(os.getenv("ENABLE_CHUNKED_CSV"), default=False),

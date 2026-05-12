@@ -116,7 +116,7 @@ BEGIN
         'dbo.sample_ingestion_target',
         '1',
         '*.csv',
-        'merge',
+        'TRUNCATE',
         'business_key',
         '{"BusinessKey":"business_key","Name":"name","Amount":"amount","EffectiveDate":"effective_date"}'
     );

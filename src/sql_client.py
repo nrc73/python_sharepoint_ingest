@@ -241,13 +241,18 @@ class SqlClient:
 
         schema, table = _parse_table_name(table_name)
 
+        # SQL Server / pyodbc caps at 2100 parameters per statement.
+        # Use 2099 (not 2100) so that num_cols * chunksize is strictly < 2100.
+        num_cols = max(len(df.columns), 1)
+        safe_chunksize = max(1, min(300, 2099 // num_cols))
+
         df.to_sql(
             name=table,
             schema=schema,
             con=self._engine,
             if_exists="append",
             index=False,
-            chunksize=1000,
+            chunksize=safe_chunksize,
             method="multi",
         )
 

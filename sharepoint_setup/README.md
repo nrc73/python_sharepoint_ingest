@@ -217,6 +217,33 @@ python sharepoint_setup/sharepoint_auth_test.py --env all
 
 This checks app-based auth and attempts folder listing.
 
+## 5a) Provision dev/prod ingestion-group folders in SharePoint
+
+Use the folder provisioning helper to create one folder per ingestion group, with
+`Processed` and `Failed` subfolders under each:
+
+- `valid_customers/{Processed,Failed}`
+- `valid_transactions/{Processed,Failed}`
+- `valid_transactions_large/{Processed,Failed}`
+
+Run for dev:
+
+```bash
+python sharepoint_setup/provision_sharepoint_folders.py --env dev
+```
+
+Run for both environments:
+
+```bash
+python sharepoint_setup/provision_sharepoint_folders.py --env all
+```
+
+Optional: force a specific document library name (for example `Documents`):
+
+```bash
+python sharepoint_setup/provision_sharepoint_folders.py --env dev --library Documents
+```
+
 ## 5b) Validate SPN active status + credential expiry
 
 ```bash

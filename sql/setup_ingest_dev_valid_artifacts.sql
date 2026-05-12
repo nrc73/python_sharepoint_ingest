@@ -1,0 +1,295 @@
+IF DB_ID('ingest_dev') IS NULL
+BEGIN
+    CREATE DATABASE ingest_dev;
+END
+GO
+
+USE ingest_dev;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'config')
+BEGIN
+    EXEC('CREATE SCHEMA [config] AUTHORIZATION [dbo]');
+END
+GO
+
+IF OBJECT_ID('dbo.dest_customers', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.dest_customers (
+        customer_id VARCHAR(20) NOT NULL,
+        customer_name VARCHAR(200) NULL,
+        signup_date DATE NULL,
+        credit_limit DECIMAL(18,2) NULL,
+        is_active VARCHAR(1) NULL,
+        region_code VARCHAR(10) NULL,
+        source_system VARCHAR(50) NULL,
+        excel_tab_name VARCHAR(100) NOT NULL,
+        source_file_name VARCHAR(255) NULL,
+        created_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        modified_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_dest_customers PRIMARY KEY (customer_id, excel_tab_name)
+    );
+END
+GO
+
+IF COL_LENGTH('dbo.dest_customers', 'excel_tab_name') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_customers ADD excel_tab_name VARCHAR(100) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_customers', 'source_file_name') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_customers ADD source_file_name VARCHAR(255) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.dest_transactions', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.dest_transactions (
+        transaction_id VARCHAR(20) NOT NULL,
+        customer_id VARCHAR(20) NULL,
+        transaction_date DATE NULL,
+        amount DECIMAL(18,2) NULL,
+        currency VARCHAR(10) NULL,
+        status VARCHAR(20) NULL,
+        source_file_name VARCHAR(255) NULL,
+        created_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        modified_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_dest_transactions PRIMARY KEY (transaction_id)
+    );
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions', 'source_file_name') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions ADD source_file_name VARCHAR(255) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.dest_transactions_large', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.dest_transactions_large (
+        transaction_id VARCHAR(20) NOT NULL,
+        customer_id VARCHAR(20) NULL,
+        transaction_date DATE NULL,
+        amount DECIMAL(18,2) NULL,
+        currency VARCHAR(10) NULL,
+        status VARCHAR(20) NULL,
+        source_file_name VARCHAR(255) NULL,
+        created_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        modified_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_dest_transactions_large PRIMARY KEY (transaction_id)
+    );
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'source_file_name') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD source_file_name VARCHAR(255) NULL;
+END
+GO
+
+UPDATE config.sharepoint_ingestion
+SET is_active = '0',
+    modified_date = GETDATE()
+WHERE workflow_id IN ('wf-valid-customers-au', 'wf-valid-customers-us');
+GO
+
+MERGE config.sharepoint_ingestion AS target
+USING (SELECT 'wf-valid-customers' AS workflow_id) AS source
+ON target.workflow_id = source.workflow_id
+WHEN MATCHED THEN
+    UPDATE SET
+        sharepoint_base_url = '{env:sharepoint_site_url}',
+        sharepoint_process_folder = '/Documents/valid_customers',
+        excel_tab_name = 'ALL_SHEETS',
+        sharepoint_process_archive_folder = '/Documents/valid_customers/Processed',
+        sharepoint_process_failed_folder = '/Documents/valid_customers/Failed',
+        process_frequency = 'OnDemand',
+        header_skip_rows = 0,
+        check_source_dest_columns = '1',
+        multi_file_ingest = '1',
+        error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
+        process_id = COALESCE(target.process_id, NEWID()),
+        staging_table_name = 'dbo.dest_customers',
+        is_active = '1',
+        file_name_pattern = 'valid_customers_*.xlsx',
+        load_strategy = 'APPEND',
+        merge_key_columns = 'customer_id,excel_tab_name',
+        column_mapping_json = '{"CustomerId":"customer_id","CustomerName":"customer_name","SignupDate":"signup_date","CreditLimit":"credit_limit","IsActive":"is_active","RegionCode":"region_code","SourceSystem":"source_system"}',
+        modified_date = GETDATE()
+WHEN NOT MATCHED THEN
+    INSERT (
+        sharepoint_base_url,
+        sharepoint_process_folder,
+        excel_tab_name,
+        sharepoint_process_archive_folder,
+        sharepoint_process_failed_folder,
+        process_frequency,
+        header_skip_rows,
+        check_source_dest_columns,
+        multi_file_ingest,
+        error_notification_email_address,
+        process_id,
+        workflow_id,
+        staging_table_name,
+        is_active,
+        file_name_pattern,
+        load_strategy,
+        merge_key_columns,
+        column_mapping_json
+    )
+    VALUES (
+        '{env:sharepoint_site_url}',
+        '/Documents/valid_customers',
+        'ALL_SHEETS',
+        '/Documents/valid_customers/Processed',
+        '/Documents/valid_customers/Failed',
+        'OnDemand',
+        0,
+        '1',
+        '1',
+        'NathanChapman@company715.onmicrosoft.com',
+        NEWID(),
+        'wf-valid-customers',
+        'dbo.dest_customers',
+        '1',
+        'valid_customers_*.xlsx',
+        'APPEND',
+        'customer_id,excel_tab_name',
+        '{"CustomerId":"customer_id","CustomerName":"customer_name","SignupDate":"signup_date","CreditLimit":"credit_limit","IsActive":"is_active","RegionCode":"region_code","SourceSystem":"source_system"}'
+    );
+GO
+
+MERGE config.sharepoint_ingestion AS target
+USING (SELECT 'wf-valid-transactions-standard' AS workflow_id) AS source
+ON target.workflow_id = source.workflow_id
+WHEN MATCHED THEN
+    UPDATE SET
+        sharepoint_base_url = '{env:sharepoint_site_url}',
+        sharepoint_process_folder = '/Documents/valid_transactions',
+        excel_tab_name = '',
+        sharepoint_process_archive_folder = '/Documents/valid_transactions/Processed',
+        sharepoint_process_failed_folder = '/Documents/valid_transactions/Failed',
+        process_frequency = 'OnDemand',
+        header_skip_rows = 0,
+        check_source_dest_columns = '1',
+        multi_file_ingest = '1',
+        error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
+        process_id = COALESCE(target.process_id, NEWID()),
+        staging_table_name = 'dbo.dest_transactions',
+        is_active = '1',
+        file_name_pattern = 'valid_transactions_00[12].csv',
+        load_strategy = 'APPEND',
+        merge_key_columns = 'transaction_id',
+        column_mapping_json = '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status"}',
+        modified_date = GETDATE()
+WHEN NOT MATCHED THEN
+    INSERT (
+        sharepoint_base_url,
+        sharepoint_process_folder,
+        excel_tab_name,
+        sharepoint_process_archive_folder,
+        sharepoint_process_failed_folder,
+        process_frequency,
+        header_skip_rows,
+        check_source_dest_columns,
+        multi_file_ingest,
+        error_notification_email_address,
+        process_id,
+        workflow_id,
+        staging_table_name,
+        is_active,
+        file_name_pattern,
+        load_strategy,
+        merge_key_columns,
+        column_mapping_json
+    )
+    VALUES (
+        '{env:sharepoint_site_url}',
+        '/Documents/valid_transactions',
+        '',
+        '/Documents/valid_transactions/Processed',
+        '/Documents/valid_transactions/Failed',
+        'OnDemand',
+        0,
+        '1',
+        '1',
+        'NathanChapman@company715.onmicrosoft.com',
+        NEWID(),
+        'wf-valid-transactions-standard',
+        'dbo.dest_transactions',
+        '1',
+        'valid_transactions_00[12].csv',
+        'APPEND',
+        'transaction_id',
+        '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status"}'
+    );
+GO
+
+MERGE config.sharepoint_ingestion AS target
+USING (SELECT 'wf-valid-transactions-large' AS workflow_id) AS source
+ON target.workflow_id = source.workflow_id
+WHEN MATCHED THEN
+    UPDATE SET
+        sharepoint_base_url = '{env:sharepoint_site_url}',
+        sharepoint_process_folder = '/Documents/valid_transactions_large',
+        excel_tab_name = '',
+        sharepoint_process_archive_folder = '/Documents/valid_transactions_large/Processed',
+        sharepoint_process_failed_folder = '/Documents/valid_transactions_large/Failed',
+        process_frequency = 'OnDemand',
+        header_skip_rows = 2,
+        check_source_dest_columns = '1',
+        multi_file_ingest = '0',
+        error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
+        process_id = COALESCE(target.process_id, NEWID()),
+        staging_table_name = 'dbo.dest_transactions_large',
+        is_active = '1',
+        file_name_pattern = 'valid_transactions_large.csv',
+        load_strategy = 'TRUNCATE',
+        merge_key_columns = 'transaction_id',
+        column_mapping_json = '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status"}',
+        modified_date = GETDATE()
+WHEN NOT MATCHED THEN
+    INSERT (
+        sharepoint_base_url,
+        sharepoint_process_folder,
+        excel_tab_name,
+        sharepoint_process_archive_folder,
+        sharepoint_process_failed_folder,
+        process_frequency,
+        header_skip_rows,
+        check_source_dest_columns,
+        multi_file_ingest,
+        error_notification_email_address,
+        process_id,
+        workflow_id,
+        staging_table_name,
+        is_active,
+        file_name_pattern,
+        load_strategy,
+        merge_key_columns,
+        column_mapping_json
+    )
+    VALUES (
+        '{env:sharepoint_site_url}',
+        '/Documents/valid_transactions_large',
+        '',
+        '/Documents/valid_transactions_large/Processed',
+        '/Documents/valid_transactions_large/Failed',
+        'OnDemand',
+        2,
+        '1',
+        '0',
+        'NathanChapman@company715.onmicrosoft.com',
+        NEWID(),
+        'wf-valid-transactions-large',
+        'dbo.dest_transactions_large',
+        '1',
+        'valid_transactions_large.csv',
+        'TRUNCATE',
+        'transaction_id',
+        '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status"}'
+    );
+GO

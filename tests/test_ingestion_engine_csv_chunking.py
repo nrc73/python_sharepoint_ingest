@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from io import BytesIO
 import logging
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from src.ingestion_engine import IngestionEngine
 from src.models import IngestionConfig
@@ -51,7 +53,7 @@ def _settings(chunked: bool = True, chunk_size: int = 2):
     return SimpleNamespace(
         email=SimpleNamespace(enabled=False, host=None, port=25, username=None, password=None, use_tls=False, from_address="noreply@example.com"),
         default_file_pattern="*",
-        default_load_strategy="truncate_reload",
+        default_load_strategy="TRUNCATE",
         null_alert_threshold=0.9,
         enable_chunked_csv=chunked,
         ingest_chunk_size_rows=chunk_size,
@@ -59,7 +61,21 @@ def _settings(chunked: bool = True, chunk_size: int = 2):
     )
 
 
-def _config(load_strategy: str = "truncate_reload") -> IngestionConfig:
+def _settings_with_site(site_url: str = "https://mycompany715.sharepoint.com/sites/data_ingest_dev"):
+    settings = _settings(chunked=False)
+    settings.sharepoint = SimpleNamespace(site_url=site_url)
+    return settings
+
+
+def _build_excel_payload(sheet_frames: dict[str, pd.DataFrame]) -> bytes:
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for sheet_name, dataframe in sheet_frames.items():
+            dataframe.to_excel(writer, sheet_name=sheet_name, index=False)
+    return buffer.getvalue()
+
+
+def _config(load_strategy: str = "TRUNCATE") -> IngestionConfig:
     return IngestionConfig(
         id=1,
         sharepoint_base_url="",
@@ -86,7 +102,7 @@ def test_chunked_csv_truncate_then_append() -> None:
     sql = DummySqlClient()
     engine = IngestionEngine(_settings(chunked=True, chunk_size=2), sql, sp, logging.getLogger("test"))
 
-    rows = engine._process_single_file(_config("truncate_reload"), "/folder/file.csv", "file.csv")
+    rows = engine._process_single_file(_config("TRUNCATE"), "/folder/file.csv", "file.csv")
 
     assert rows == 3
     assert sql.calls == [("truncate_and_load", 2), ("append_load", 1)]
@@ -99,7 +115,7 @@ def test_chunked_csv_append_strategy() -> None:
     sql = DummySqlClient()
     engine = IngestionEngine(_settings(chunked=True, chunk_size=2), sql, sp, logging.getLogger("test"))
 
-    rows = engine._process_single_file(_config("append"), "/folder/file.csv", "file.csv")
+    rows = engine._process_single_file(_config("APPEND"), "/folder/file.csv", "file.csv")
 
     assert rows == 3
     assert sql.calls == [("append_load", 2), ("append_load", 1)]
@@ -111,7 +127,168 @@ def test_chunked_csv_empty_file_truncate_reload_still_truncates() -> None:
     sql = DummySqlClient()
     engine = IngestionEngine(_settings(chunked=True, chunk_size=2), sql, sp, logging.getLogger("test"))
 
-    rows = engine._process_single_file(_config("truncate_reload"), "/folder/file.csv", "file.csv")
+    rows = engine._process_single_file(_config("TRUNCATE"), "/folder/file.csv", "file.csv")
 
     assert rows == 0
     assert sql.calls == [("truncate_and_load", 0)]
+
+
+def test_excel_datetime_column_parses_ddmmyyyy_and_mmddyyyy_to_datetime() -> None:
+    engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+    source = pd.DataFrame(
+        {
+            "txn_date": ["13/04/2026", "04/25/2026", "2026-05-01"],
+            "value": [1, 2, 3],
+        }
+    )
+    destination_columns = [{"column_name": "txn_date", "data_type": "datetime"}]
+
+    normalized = engine._normalize_dataframe(source, source_kind="excel", destination_columns=destination_columns)
+
+    assert pd.api.types.is_datetime64_any_dtype(normalized["txn_date"])
+    assert str(normalized.loc[0, "txn_date"].date()) == "2026-04-13"
+    assert str(normalized.loc[1, "txn_date"].date()) == "2026-04-25"
+    assert str(normalized.loc[2, "txn_date"].date()) == "2026-05-01"
+
+
+def test_datetime_column_rejects_ambiguous_slash_date_without_inference_hints() -> None:
+    engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+    source = pd.DataFrame({"txn_date": ["03/04/2026"]})
+    destination_columns = [{"column_name": "txn_date", "data_type": "datetime"}]
+
+    with pytest.raises(ValueError, match="Ambiguous date values"):
+        engine._normalize_dataframe(source, source_kind="excel", destination_columns=destination_columns)
+
+
+def test_datetime_column_infers_ambiguous_values_from_unambiguous_dmy_hints() -> None:
+    engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+    source = pd.DataFrame({"txn_date": ["13/04/2026", "03/04/2026"]})
+    destination_columns = [{"column_name": "txn_date", "data_type": "datetime"}]
+
+    normalized = engine._normalize_dataframe(source, source_kind="csv", destination_columns=destination_columns)
+
+    assert str(normalized.loc[0, "txn_date"].date()) == "2026-04-13"
+    assert str(normalized.loc[1, "txn_date"].date()) == "2026-04-03"
+
+
+def test_apply_ingestion_metadata_sets_source_file_name_for_csv() -> None:
+    engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+    config = _config("APPEND")
+    source = pd.DataFrame({"transaction_id": ["TXN000001"], "amount": [10.5]})
+    destination_columns = [
+        {"column_name": "transaction_id", "data_type": "varchar"},
+        {"column_name": "source_file_name", "data_type": "varchar"},
+    ]
+
+    enriched = engine._apply_ingestion_metadata(
+        source,
+        config,
+        destination_columns=destination_columns,
+        file_name="valid_transactions_001.csv",
+        source_kind="csv",
+    )
+
+    assert "source_file_name" in enriched.columns
+    assert enriched.loc[0, "source_file_name"] == "valid_transactions_001.csv"
+
+
+def test_apply_ingestion_metadata_sets_excel_tab_name_for_excel() -> None:
+    engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+    config = _config("APPEND")
+    config.excel_tab_name = "Customers_AU"
+    source = pd.DataFrame({"customer_id": ["CUST00001"], "customer_name": ["Customer 1"]})
+    destination_columns = [
+        {"column_name": "customer_id", "data_type": "varchar"},
+        {"column_name": "excel_tab_name", "data_type": "varchar"},
+        {"column_name": "source_file_name", "data_type": "varchar"},
+    ]
+
+    enriched = engine._apply_ingestion_metadata(
+        source,
+        config,
+        destination_columns=destination_columns,
+        file_name="valid_customers_001.xlsx",
+        source_kind="excel",
+    )
+
+    assert "excel_tab_name" in enriched.columns
+    assert "source_file_name" in enriched.columns
+    assert enriched.loc[0, "excel_tab_name"] == "Customers_AU"
+    assert enriched.loc[0, "source_file_name"] == "valid_customers_001.xlsx"
+
+
+def test_resolve_sharepoint_folder_prefixes_site_path_for_documents_relative_path() -> None:
+    engine = IngestionEngine(_settings_with_site(), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+
+    resolved = engine._resolve_sharepoint_folder("/Documents/valid_customers")
+
+    assert resolved == "/sites/data_ingest_dev/Documents/valid_customers"
+
+
+def test_resolve_sharepoint_folder_supports_env_site_path_placeholder() -> None:
+    engine = IngestionEngine(_settings_with_site(), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+
+    resolved = engine._resolve_sharepoint_folder("{env:site_path}/Documents/valid_customers/Processed")
+
+    assert resolved == "/sites/data_ingest_dev/Documents/valid_customers/Processed"
+
+
+def test_parse_excel_payload_regex_adds_actual_sheet_name_column() -> None:
+    engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+    config = _config("APPEND")
+    config.excel_tab_name = "REGEX:^Customers_(AU|US)$"
+    payload = _build_excel_payload(
+        {
+            "Customers_AU": pd.DataFrame({"customer_id": ["CUST_AU_001"]}),
+            "Customers_US": pd.DataFrame({"customer_id": ["CUST_US_001"]}),
+            "Other": pd.DataFrame({"customer_id": ["CUST_OTH_001"]}),
+        }
+    )
+
+    parsed = engine._parse_excel_payload(config, payload)
+
+    assert "excel_tab_name" in parsed.columns
+    assert sorted(parsed["excel_tab_name"].dropna().unique().tolist()) == ["Customers_AU", "Customers_US"]
+    assert len(parsed) == 2
+
+
+def test_apply_ingestion_metadata_preserves_existing_excel_tab_name_values() -> None:
+    engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+    config = _config("APPEND")
+    config.excel_tab_name = "REGEX:^Customers_(AU|US)$"
+    source = pd.DataFrame(
+        {
+            "customer_id": ["CUST00001", "CUST00002"],
+            "excel_tab_name": ["Customers_AU", "Customers_US"],
+        }
+    )
+    destination_columns = [
+        {"column_name": "customer_id", "data_type": "varchar"},
+        {"column_name": "excel_tab_name", "data_type": "varchar"},
+        {"column_name": "source_file_name", "data_type": "varchar"},
+    ]
+
+    enriched = engine._apply_ingestion_metadata(
+        source,
+        config,
+        destination_columns=destination_columns,
+        file_name="valid_customers_001.xlsx",
+        source_kind="excel",
+    )
+
+    assert enriched["excel_tab_name"].tolist() == ["Customers_AU", "Customers_US"]
+
+
+def test_resolve_load_strategy_forces_append_for_multi_file_processing() -> None:
+    engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+
+    resolved = engine._resolve_load_strategy("TRUNCATE", force_append=True)
+
+    assert resolved == "APPEND"
+
+
+def test_resolve_load_strategy_rejects_unsupported_merge_value() -> None:
+    engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+
+    with pytest.raises(ValueError, match="Unsupported load_strategy"):
+        engine._resolve_load_strategy("merge")

@@ -22,7 +22,7 @@ def _ensure_dirs() -> dict[str, Path]:
     return paths
 
 
-def _build_customers_rows(file_seq: int, start_id: int, count: int, region: str, locale_tag: str) -> list[dict]:
+def _build_customers_rows(file_seq: int, start_id: int, count: int, region: str) -> list[dict]:
     rows: list[dict] = []
     base_date = datetime(2024, 1, 1) + timedelta(days=file_seq * 7)
 
@@ -33,33 +33,41 @@ def _build_customers_rows(file_seq: int, start_id: int, count: int, region: str,
             {
                 "CustomerId": f"CUST{idx:05d}",
                 "CustomerName": f"Customer {idx}",
-                "SignupDate": signup_date.date().isoformat(),
+                "SignupDate": signup_date.date(),
                 "CreditLimit": round(1500 + (i * 35.75) + (file_seq * 50), 2),
                 "IsActive": "Y" if i % 5 != 0 else "N",
                 "RegionCode": region,
-                "DateLocaleTag": locale_tag,
                 "SourceSystem": "CRM",
             }
         )
     return rows
 
 
+def _apply_signup_date_number_format(writer: pd.ExcelWriter, sheet_name: str, format_code: str) -> None:
+    ws = writer.book[sheet_name]
+    headers = [cell.value for cell in ws[1]]
+    if "SignupDate" not in headers:
+        return
+
+    signup_col_idx = headers.index("SignupDate") + 1
+    for row_idx in range(2, ws.max_row + 1):
+        ws.cell(row=row_idx, column=signup_col_idx).number_format = format_code
+
+
 def generate_valid_excel_files(valid_excel_dir: Path) -> None:
     for n in (1, 2, 3):
         file_path = valid_excel_dir / f"valid_customers_{n:03d}.xlsx"
 
-        au_rows = _build_customers_rows(file_seq=n, start_id=1000 + (n * 100), count=8, region="AU", locale_tag="[$-en-AU]")
-        us_rows = _build_customers_rows(file_seq=n, start_id=2000 + (n * 100), count=8, region="US", locale_tag="[$-en-US]")
-
-        reference_rows = [
-            {"RegionCode": "AU", "RegionName": "Australia", "CurrencyCode": "AUD"},
-            {"RegionCode": "US", "RegionName": "United States", "CurrencyCode": "USD"},
-        ]
+        au_rows = _build_customers_rows(file_seq=n, start_id=1000 + (n * 100), count=8, region="AU")
+        us_rows = _build_customers_rows(file_seq=n, start_id=2000 + (n * 100), count=8, region="US")
 
         with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
             pd.DataFrame(au_rows).to_excel(writer, sheet_name="Customers_AU", index=False)
             pd.DataFrame(us_rows).to_excel(writer, sheet_name="Customers_US", index=False)
-            pd.DataFrame(reference_rows).to_excel(writer, sheet_name="Reference", index=False)
+
+            # Explicit display formats per worksheet while preserving true Excel date values.
+            _apply_signup_date_number_format(writer, "Customers_AU", "d/mm/yyyy;@")
+            _apply_signup_date_number_format(writer, "Customers_US", "m/d/yyyy;@")
 
 
 def generate_valid_csv_files(valid_csv_dir: Path) -> None:
@@ -85,7 +93,15 @@ def generate_valid_csv_files(valid_csv_dir: Path) -> None:
 
     pd.DataFrame(_rows(offset=1, count=25)).to_csv(file_1, index=False)
     pd.DataFrame(_rows(offset=1000, count=25)).to_csv(file_2, index=False)
-    pd.DataFrame(_rows(offset=100000, count=12000)).to_csv(file_large, index=False)
+
+    # Large CSV test fixture for chunking + header skip behavior:
+    # - triple prior row volume (12,000 -> 36,000)
+    # - add two leading non-data rows before the header
+    large_df = pd.DataFrame(_rows(offset=100000, count=36000))
+    with file_large.open("w", encoding="utf-8", newline="") as fh:
+        fh.write("# preamble row 1 for skip-rows testing\n")
+        fh.write("# preamble row 2 for skip-rows testing\n")
+        large_df.to_csv(fh, index=False)
 
 
 def generate_invalid_csv_files(invalid_csv_dir: Path) -> None:
