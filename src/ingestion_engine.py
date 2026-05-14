@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+import os
 import fnmatch
 import json
 import logging
 import re
+import time
+import uuid
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse
 
 import pandas as pd
+
+try:
+    import psutil
+except ImportError:  # pragma: no cover - dependency availability check
+    psutil = None  # type: ignore[assignment]
 
 from src.config import AppSettings
 from src.file_processors import (
@@ -19,7 +27,7 @@ from src.file_processors import (
     read_excel_from_bytes,
 )
 from src.models import IngestionConfig, IngestionSummary, ValidationIssue
-from src.notifications import EmailNotifier, build_validation_email_body
+from src.notifications import EmailNotifier, build_failure_email_body, build_validation_email_body
 from src.schema_validator import validate_source_against_destination
 from src.sharepoint_client import SharePointClient
 from src.sql_client import SqlClient
@@ -41,6 +49,8 @@ class ProcessResult:
 class IngestionEngine:
     _DATE_TYPE_NAMES = {"date", "datetime", "datetime2", "smalldatetime", "datetimeoffset", "time"}
     _SLASH_DATE_RE = re.compile(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(.*)$")
+    _DATE_LIKE_TEXT_RE = re.compile(r"^\d{1,4}[/-]\d{1,2}[/-]\d{1,4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$")
+    _PROGRESS_PCT_STEPS = (0, 10, 25, 50, 75, 90, 100)
 
     def __init__(
         self,
@@ -54,6 +64,118 @@ class IngestionEngine:
         self.sharepoint_client = sharepoint_client
         self.logger = logger
         self.notifier = EmailNotifier(settings.email)
+        self._last_file_rows_scanned: Optional[int] = None
+        self._last_file_validation_error_count: int = 0
+        self._current_file_memory_peak_mb: Optional[float] = None
+        self._progress_markers: dict[str, set[int]] = {}
+
+    def _reset_file_telemetry(self) -> None:
+        self._last_file_rows_scanned = None
+        self._last_file_validation_error_count = 0
+        self._current_file_memory_peak_mb = None
+        self._progress_markers = {}
+
+    def _log_phase_progress(
+        self,
+        *,
+        phase: str,
+        processed: int,
+        total: int,
+        context: str,
+        unit: str = "rows",
+    ) -> None:
+        if total <= 0:
+            return
+
+        ratio = max(0.0, min(1.0, float(processed) / float(total)))
+        pct = int(round(ratio * 100))
+
+        emitted = self._progress_markers.setdefault(phase, set())
+        for milestone in self._PROGRESS_PCT_STEPS:
+            if pct >= milestone and milestone not in emitted:
+                emitted.add(milestone)
+                self.logger.info(
+                    "Config id=%s %s progress: %s%% (%s/%s %s)%s",
+                    context,
+                    phase,
+                    milestone,
+                    min(processed, total),
+                    total,
+                    unit,
+                    "" if milestone < 100 else " complete",
+                )
+
+    def _set_rows_scanned(self, value: int) -> None:
+        self._last_file_rows_scanned = max(0, int(value))
+
+    def _set_validation_error_count(self, value: int) -> None:
+        self._last_file_validation_error_count = max(0, int(value))
+
+    def _read_process_memory_mb(self) -> Optional[float]:
+        if psutil is not None:
+            try:
+                rss_bytes = psutil.Process().memory_info().rss
+                return round(float(rss_bytes) / (1024 * 1024), 2)
+            except Exception:  # pragma: no cover - platform/runtime dependent
+                pass
+
+        # Fallback for Windows environments where psutil is unavailable at runtime.
+        if os.name != "nt":
+            return None
+
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            counters = PROCESS_MEMORY_COUNTERS()
+            counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+
+            kernel32 = ctypes.WinDLL("Kernel32.dll")
+            psapi = ctypes.WinDLL("Psapi.dll")
+
+            process_handle = kernel32.GetCurrentProcess()
+            get_process_memory_info = psapi.GetProcessMemoryInfo
+            get_process_memory_info.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(PROCESS_MEMORY_COUNTERS),
+                wintypes.DWORD,
+            ]
+            get_process_memory_info.restype = wintypes.BOOL
+
+            ok = get_process_memory_info(
+                process_handle,
+                ctypes.byref(counters),
+                counters.cb,
+            )
+            if not ok:
+                return None
+
+            return round(float(counters.WorkingSetSize) / (1024 * 1024), 2)
+        except Exception:  # pragma: no cover - platform/runtime dependent
+            return None
+
+    def _capture_memory_peak_mb(self) -> Optional[float]:
+        current = self._read_process_memory_mb()
+        if current is None:
+            return self._current_file_memory_peak_mb
+
+        if self._current_file_memory_peak_mb is None or current > self._current_file_memory_peak_mb:
+            self._current_file_memory_peak_mb = current
+        return self._current_file_memory_peak_mb
 
     def _runtime_sharepoint_site_url(self) -> str:
         sharepoint_settings = getattr(self.settings, "sharepoint", None)
@@ -184,6 +306,10 @@ class IngestionEngine:
         force_append_for_selected_files = len(matching_files) > 1
 
         for item in matching_files:
+            self._reset_file_telemetry()
+            batch_id = str(uuid.uuid4())
+            started = time.perf_counter()
+            self._capture_memory_peak_mb()
             try:
                 row_count = self._process_single_file(
                     config,
@@ -202,6 +328,11 @@ class IngestionEngine:
                     status="SUCCESS",
                     records_loaded=row_count,
                     message=None,
+                    batch_id=batch_id,
+                    rows_scanned=self._last_file_rows_scanned,
+                    validation_error_count=self._last_file_validation_error_count,
+                    memory_peak_mb=self._capture_memory_peak_mb(),
+                    duration_seconds=round(time.perf_counter() - started, 2),
                 )
             except Exception as exc:  # pragma: no cover - integration path
                 err = f"Config {config.id} failed for file {item.name}: {exc}"
@@ -216,6 +347,11 @@ class IngestionEngine:
                     status="FAILED",
                     records_loaded=None,
                     message=err,
+                    batch_id=batch_id,
+                    rows_scanned=self._last_file_rows_scanned,
+                    validation_error_count=self._last_file_validation_error_count,
+                    memory_peak_mb=self._capture_memory_peak_mb(),
+                    duration_seconds=round(time.perf_counter() - started, 2),
                 )
 
                 if failed_folder:
@@ -231,7 +367,14 @@ class IngestionEngine:
                             failed_folder,
                         )
 
-                self._notify_failure(config, err)
+                self._notify_failure(
+                    config,
+                    err,
+                    file_name=item.name,
+                    rows_scanned=self._last_file_rows_scanned,
+                    memory_peak_mb=self._capture_memory_peak_mb(),
+                    duration_seconds=round(time.perf_counter() - started, 2),
+                )
 
         return result
 
@@ -247,6 +390,7 @@ class IngestionEngine:
         source_kind = "csv" if lower_name.endswith(".csv") else "excel"
         destination_columns = self.sql_client.get_table_columns(config.staging_table_name)
         resolved_load_strategy = self._resolve_load_strategy(config.load_strategy, force_append=force_append)
+        self._capture_memory_peak_mb()
 
         if lower_name.endswith(".csv") and self.settings.enable_chunked_csv:
             return self._process_csv_file_in_chunks(
@@ -258,7 +402,9 @@ class IngestionEngine:
             )
 
         payload = self.sharepoint_client.download_file_to_bytes(server_relative_url)
+        self._capture_memory_peak_mb()
         dataframe = self._parse_file(config, payload, file_name)
+        self._capture_memory_peak_mb()
         dataframe = self._apply_column_mapping_if_present(dataframe, config)
         dataframe = self._apply_ingestion_metadata(
             dataframe,
@@ -267,12 +413,38 @@ class IngestionEngine:
             file_name=file_name,
             source_kind=source_kind,
         )
+        self._set_rows_scanned(len(dataframe))
+        self._log_phase_progress(
+            phase="validation",
+            processed=len(dataframe),
+            total=len(dataframe),
+            context=str(config.id),
+        )
+        precheck_issues = self._detect_excel_datetime_text_issues(
+            dataframe,
+            destination_columns=destination_columns,
+        ) if source_kind == "excel" else []
         dataframe = self._normalize_dataframe(dataframe, source_kind=source_kind, destination_columns=destination_columns)
+        self._capture_memory_peak_mb()
 
         if config.schema_check_enabled:
-            self._run_schema_checks(config, dataframe, destination_columns=destination_columns)
+            self._run_schema_checks(
+                config,
+                dataframe,
+                destination_columns=destination_columns,
+                precomputed_issues=precheck_issues,
+            )
+        elif precheck_issues:
+            self._publish_validation_issues(config, precheck_issues)
 
         self._load_dataframe(config, dataframe, load_strategy=resolved_load_strategy)
+        self._log_phase_progress(
+            phase="import",
+            processed=len(dataframe),
+            total=len(dataframe),
+            context=str(config.id),
+        )
+        self._capture_memory_peak_mb()
 
         resolved_archive_folder = archive_folder or self._resolve_sharepoint_folder(config.sharepoint_process_archive_folder)
         if resolved_archive_folder:
@@ -289,6 +461,7 @@ class IngestionEngine:
         load_strategy: Optional[str] = None,
     ) -> int:
         buffer = self.sharepoint_client.download_file_to_buffer(server_relative_url)
+        self._capture_memory_peak_mb()
         destination_columns = self.sql_client.get_table_columns(config.staging_table_name)
         chunk_iter = iter_csv_chunks_from_buffer(
             buffer,
@@ -298,11 +471,20 @@ class IngestionEngine:
 
         resolved_load_strategy = self._resolve_load_strategy(load_strategy or config.load_strategy)
         total_rows = 0
+        total_rows_scanned = 0
         first_chunk = True
         processed_any_chunk = False
 
+        try:
+            buffer.seek(0, 2)
+            total_buffer_bytes = max(buffer.tell(), 1)
+            buffer.seek(0)
+        except Exception:
+            total_buffer_bytes = 1
+
         for dataframe in chunk_iter:
             processed_any_chunk = True
+            self._capture_memory_peak_mb()
             dataframe = self._apply_column_mapping_if_present(dataframe, config)
             dataframe = self._apply_ingestion_metadata(
                 dataframe,
@@ -312,6 +494,20 @@ class IngestionEngine:
                 source_kind="csv",
             )
             dataframe = self._normalize_dataframe(dataframe, source_kind="csv", destination_columns=destination_columns)
+            self._capture_memory_peak_mb()
+
+            try:
+                processed_bytes = buffer.tell()
+            except Exception:
+                processed_bytes = 0
+
+            self._log_phase_progress(
+                phase="validation",
+                processed=processed_bytes,
+                total=total_buffer_bytes,
+                context=str(config.id),
+                unit="bytes",
+            )
 
             if config.schema_check_enabled and first_chunk:
                 self._run_schema_checks(config, dataframe, destination_columns=destination_columns)
@@ -323,14 +519,31 @@ class IngestionEngine:
                 load_strategy=resolved_load_strategy,
             )
             total_rows += len(dataframe)
+            total_rows_scanned += len(dataframe)
+            self._set_rows_scanned(total_rows_scanned)
+
+            try:
+                processed_bytes = buffer.tell()
+            except Exception:
+                processed_bytes = 0
+            self._log_phase_progress(
+                phase="import",
+                processed=processed_bytes,
+                total=total_buffer_bytes,
+                context=str(config.id),
+                unit="bytes",
+            )
             first_chunk = False
 
         if not processed_any_chunk and resolved_load_strategy == "TRUNCATE":
             self.sql_client.truncate_and_load(pd.DataFrame(), config.staging_table_name)
+            self._set_rows_scanned(0)
 
         resolved_archive_folder = archive_folder or self._resolve_sharepoint_folder(config.sharepoint_process_archive_folder)
         if resolved_archive_folder:
             self.sharepoint_client.move_file(server_relative_url, resolved_archive_folder)
+
+        self._capture_memory_peak_mb()
 
         return total_rows
 
@@ -466,6 +679,7 @@ class IngestionEngine:
         config: IngestionConfig,
         dataframe: pd.DataFrame,
         destination_columns: Optional[list[dict]] = None,
+        precomputed_issues: Optional[list[ValidationIssue]] = None,
     ) -> None:
         dest_columns = destination_columns or self.sql_client.get_table_columns(config.staging_table_name)
         issues = validate_source_against_destination(
@@ -474,19 +688,73 @@ class IngestionEngine:
             null_alert_threshold=self.settings.null_alert_threshold,
         )
 
+        if precomputed_issues:
+            issues = [*precomputed_issues, *issues]
+
         if not issues:
             return
 
-        issue_strings = [self._format_issue(i) for i in issues]
-        for issue in issue_strings:
-            self.logger.warning("Config id=%s validation: %s", config.id, issue)
-
-        self._notify_validation_issues(config, issue_strings)
+        self._publish_validation_issues(config, issues)
 
         blocking_errors = [i for i in issues if i.severity.upper() == "ERROR"]
+        self._set_validation_error_count(len(blocking_errors))
         if blocking_errors:
             formatted = "; ".join(self._format_issue(i) for i in blocking_errors)
             raise ValueError(f"Schema validation failed: {formatted}")
+
+    def _publish_validation_issues(self, config: IngestionConfig, issues: list[ValidationIssue]) -> None:
+        issue_strings = [self._format_issue(i) for i in issues]
+        for issue in issue_strings:
+            self.logger.warning("Config id=%s validation: %s", config.id, issue)
+        self._notify_validation_issues(config, issue_strings, issues=issues)
+
+    @classmethod
+    def _is_date_like_text(cls, text_value: str) -> bool:
+        return bool(cls._DATE_LIKE_TEXT_RE.match(text_value.strip()))
+
+    def _detect_excel_datetime_text_issues(
+        self,
+        dataframe: pd.DataFrame,
+        destination_columns: list[dict],
+    ) -> list[ValidationIssue]:
+        issues: list[ValidationIssue] = []
+        datetime_columns = self._destination_datetime_columns(destination_columns)
+        if not datetime_columns:
+            return issues
+
+        for source_col in dataframe.columns:
+            if source_col.strip().lower() not in datetime_columns:
+                continue
+
+            series = dataframe[source_col]
+            text_date_values: list[str] = []
+
+            for value in series:
+                if value is None or (isinstance(value, float) and pd.isna(value)):
+                    continue
+                if isinstance(value, (pd.Timestamp, datetime, date)):
+                    continue
+                if isinstance(value, str):
+                    candidate = value.strip()
+                    if candidate and self._is_date_like_text(candidate):
+                        text_date_values.append(candidate)
+
+            if not text_date_values:
+                continue
+
+            samples = ", ".join(text_date_values[:5])
+            issues.append(
+                ValidationIssue(
+                    severity="WARNING",
+                    code="EXCEL_DATETIME_STORED_AS_TEXT",
+                    message=(
+                        f"Date/datetime column '{source_col}' contains date-like values stored as text in Excel."
+                    ),
+                    details=f"count={len(text_date_values)}, samples={samples}",
+                )
+            )
+
+        return issues
 
     @classmethod
     def _destination_datetime_columns(cls, destination_columns: list[dict]) -> set[str]:
@@ -647,25 +915,82 @@ class IngestionEngine:
         detail = f" ({issue.details})" if issue.details else ""
         return f"[{issue.severity}] {issue.code}: {issue.message}{detail}"
 
-    def _notify_failure(self, config: IngestionConfig, error_message: str) -> None:
+    def _notify_failure(
+        self,
+        config: IngestionConfig,
+        error_message: str,
+        *,
+        file_name: Optional[str] = None,
+        rows_scanned: Optional[int] = None,
+        memory_peak_mb: Optional[float] = None,
+        duration_seconds: Optional[float] = None,
+    ) -> None:
         subject = f"SharePoint ingestion failure - config {config.id}"
-        body = (
-            f"Configuration ID: {config.id}\n"
-            f"Workflow ID: {config.workflow_id}\n"
-            f"Process ID: {config.process_id}\n"
-            f"Environment: {self.settings.env_name}\n\n"
-            f"Error:\n{error_message}"
+        process_name = (
+            f"config_id={config.id}, workflow_id={config.workflow_id}, "
+            f"process_id={config.process_id}, env={self.settings.env_name}"
+        )
+        body = build_failure_email_body(
+            process_name=process_name,
+            error_message=error_message,
+            file_name=file_name,
+            rows_scanned=rows_scanned,
+            memory_peak_mb=memory_peak_mb,
+            duration_seconds=duration_seconds,
         )
 
         sent = self.notifier.send(config.error_notification_email_address, subject, body)
         if sent:
             self.logger.info("Failure notification sent to %s", config.error_notification_email_address)
 
-    def _notify_validation_issues(self, config: IngestionConfig, issue_messages: list[str]) -> None:
+    @staticmethod
+    def _extract_sheet_name_from_issues(issues: list[ValidationIssue]) -> Optional[str]:
+        sheet_names: list[str] = []
+        sheet_re = re.compile(r"excel_tab_name\s*=\s*([^,;]+)", re.IGNORECASE)
+        for issue in issues:
+            details = str(issue.details or "")
+            if not details:
+                continue
+            match = sheet_re.search(details)
+            if match:
+                candidate = match.group(1).strip().strip("\"'")
+                if candidate:
+                    sheet_names.append(candidate)
+
+        if not sheet_names:
+            return None
+
+        unique_names = sorted(set(sheet_names))
+        if len(unique_names) == 1:
+            return unique_names[0]
+        return f"multiple ({', '.join(unique_names[:3])}{'...' if len(unique_names) > 3 else ''})"
+
+    def _notify_validation_issues(
+        self,
+        config: IngestionConfig,
+        issue_messages: list[str],
+        *,
+        issues: Optional[list[ValidationIssue]] = None,
+    ) -> None:
         subject = f"SharePoint ingestion validation warning - config {config.id}"
+        source_file_name = None
+        sheet_name = None
+
+        if issues:
+            sheet_name = self._extract_sheet_name_from_issues(issues)
+
+        # best-effort file context from in-memory issue details/messages
+        issue_blob = "\n".join(issue_messages)
+        file_match = re.search(r"source_file_name\s*=\s*([^,;\n]+)", issue_blob, re.IGNORECASE)
+        if file_match:
+            source_file_name = file_match.group(1).strip().strip("\"'")
+
         body = build_validation_email_body(
             process_name=f"config_id={config.id}, workflow_id={config.workflow_id}",
             issues=issue_messages,
+            file_name=source_file_name,
+            sheet_name=sheet_name,
+            max_issue_lines=15,
         )
         sent = self.notifier.send(config.error_notification_email_address, subject, body)
         if sent:

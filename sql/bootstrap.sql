@@ -57,9 +57,44 @@ BEGIN
         file_name VARCHAR(255) NULL,
         status VARCHAR(20) NOT NULL,
         records_loaded INT NULL,
+        batch_id UNIQUEIDENTIFIER NULL,
+        rows_scanned INT NULL,
+        validation_error_count INT NULL,
+        memory_peak_mb DECIMAL(18,2) NULL,
+        duration_seconds DECIMAL(18,2) NULL,
         message VARCHAR(MAX) NULL,
         created_date DATETIME NOT NULL DEFAULT GETDATE()
     );
+END
+GO
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'batch_id') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD batch_id UNIQUEIDENTIFIER NULL;
+END
+GO
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'rows_scanned') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD rows_scanned INT NULL;
+END
+GO
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'validation_error_count') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD validation_error_count INT NULL;
+END
+GO
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'memory_peak_mb') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD memory_peak_mb DECIMAL(18,2) NULL;
+END
+GO
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'duration_seconds') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD duration_seconds DECIMAL(18,2) NULL;
 END
 GO
 

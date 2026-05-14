@@ -139,7 +139,13 @@ def _ensure_folder(sp_client: SharePointClient, folder_server_relative_url: str)
 
 def _build_folder_specs(site_path: str, library_name: str) -> list[FolderSpec]:
     base = f"{site_path}/{library_name}".rstrip("/")
-    groups = ["valid_customers", "valid_transactions", "valid_transactions_large"]
+    groups = [
+        "valid_customers",
+        "valid_transactions",
+        "valid_transactions_large",
+        "invalid_csv",
+        "invalid_excel",
+    ]
 
     specs: list[FolderSpec] = []
     for group in groups:

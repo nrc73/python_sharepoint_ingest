@@ -61,6 +61,10 @@ sequenceDiagram
             Py->>SP: HTTPS 443 - Download file payload
             SP-->>Py: CSV/Excel bytes
 
+            Note over Py: Validation includes detection of Excel datetime fields stored as text
+            Py->>Py: Emit validation warning (EXCEL_DATETIME_STORED_AS_TEXT)
+            Py->>Ops: Optional notification email for validation warnings
+
             Py->>SQL: TCP 1433 - Load/append/merge into target table
             SQL-->>Py: DML outcome
 

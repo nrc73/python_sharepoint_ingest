@@ -76,6 +76,20 @@ BEGIN
         amount DECIMAL(18,2) NULL,
         currency VARCHAR(10) NULL,
         status VARCHAR(20) NULL,
+        quantity INT NULL,
+        discount_rate DECIMAL(9,4) NULL,
+        fee_amount DECIMAL(18,2) NULL,
+        tax_amount DECIMAL(18,2) NULL,
+        net_amount DECIMAL(18,2) NULL,
+        channel VARCHAR(20) NULL,
+        region VARCHAR(10) NULL,
+        source_system VARCHAR(50) NULL,
+        batch_id VARCHAR(50) NULL,
+        event_timestamp DATETIME2 NULL,
+        is_priority VARCHAR(1) NULL,
+        reference_code VARCHAR(50) NULL,
+        ledger_code VARCHAR(20) NULL,
+        comment_text VARCHAR(500) NULL,
         source_file_name VARCHAR(255) NULL,
         created_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
         modified_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
@@ -87,6 +101,90 @@ GO
 IF COL_LENGTH('dbo.dest_transactions_large', 'source_file_name') IS NULL
 BEGIN
     ALTER TABLE dbo.dest_transactions_large ADD source_file_name VARCHAR(255) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'quantity') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD quantity INT NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'discount_rate') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD discount_rate DECIMAL(9,4) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'fee_amount') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD fee_amount DECIMAL(18,2) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'tax_amount') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD tax_amount DECIMAL(18,2) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'net_amount') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD net_amount DECIMAL(18,2) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'channel') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD channel VARCHAR(20) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'region') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD region VARCHAR(10) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'source_system') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD source_system VARCHAR(50) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'batch_id') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD batch_id VARCHAR(50) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'event_timestamp') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD event_timestamp DATETIME2 NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'is_priority') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD is_priority VARCHAR(1) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'reference_code') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD reference_code VARCHAR(50) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'ledger_code') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD ledger_code VARCHAR(20) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'comment_text') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_large ADD comment_text VARCHAR(500) NULL;
 END
 GO
 
@@ -249,7 +347,7 @@ WHEN MATCHED THEN
         file_name_pattern = 'valid_transactions_large.csv',
         load_strategy = 'TRUNCATE',
         merge_key_columns = 'transaction_id',
-        column_mapping_json = '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status"}',
+        column_mapping_json = '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status","Quantity":"quantity","DiscountRate":"discount_rate","FeeAmount":"fee_amount","TaxAmount":"tax_amount","NetAmount":"net_amount","Channel":"channel","Region":"region","SourceSystem":"source_system","BatchId":"batch_id","EventTimestamp":"event_timestamp","IsPriority":"is_priority","ReferenceCode":"reference_code","LedgerCode":"ledger_code","CommentText":"comment_text"}',
         modified_date = GETDATE()
 WHEN NOT MATCHED THEN
     INSERT (
@@ -290,6 +388,6 @@ WHEN NOT MATCHED THEN
         'valid_transactions_large.csv',
         'TRUNCATE',
         'transaction_id',
-        '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status"}'
+        '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status","Quantity":"quantity","DiscountRate":"discount_rate","FeeAmount":"fee_amount","TaxAmount":"tax_amount","NetAmount":"net_amount","Channel":"channel","Region":"region","SourceSystem":"source_system","BatchId":"batch_id","EventTimestamp":"event_timestamp","IsPriority":"is_priority","ReferenceCode":"reference_code","LedgerCode":"ledger_code","CommentText":"comment_text"}'
     );
 GO

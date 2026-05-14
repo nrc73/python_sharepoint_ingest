@@ -1,0 +1,228 @@
+# Performance and Resource Handling
+
+This document describes performance characteristics, known resource pressures, and
+operational guidance for the SharePoint ingestion pipeline — in particular for
+production environments where multiple workflow instances may run in parallel.
+
+---
+
+## Table of contents
+
+1. [SQL Server insert performance](#sql-server-insert-performance)
+2. [Parallel ingestion considerations](#parallel-ingestion-considerations)
+3. [Memory and process footprint](#memory-and-process-footprint)
+4. [SharePoint download throughput](#sharepoint-download-throughput)
+5. [Failure email — resource telemetry](#failure-email--resource-telemetry)
+6. [Diagnosing slow or hung runs](#diagnosing-slow-or-hung-runs)
+7. [Configuration reference](#configuration-reference)
+
+---
+
+## SQL Server insert performance
+
+### What changed (v1.x → current)
+
+| Setting | Old | Current | Effect |
+|---|---|---|---|
+| `pandas.to_sql` method | `"multi"` | `None` (executemany) | Enables pyodbc `fast_executemany` path |
+| `chunksize` | `2099 // num_cols` (~99 for customers) | `10 000` | Fewer round-trips, larger vectorised batches |
+
+`method="multi"` generates a large `INSERT INTO … VALUES (…),(…),(…)` string per chunk
+and **bypasses** pyodbc's `fast_executemany=True` engine setting.  Switching to
+`method=None` lets SQLAlchemy call `cursor.executemany()` instead, which pyodbc
+vectorises into a single server-side batch per chunk.
+
+### Observed impact (dev environment — SQL Server in local Docker)
+
+| File | Rows | Old duration | Current duration | Peak RSS |
+|---|---|---|---|---|
+| `valid_transactions_large.csv` | 1 000 000 | ~850 s (~14 min) | ~572 s (~9.5 min) | 719 MB |
+
+> The 33% improvement is due purely to the `fast_executemany` path change; the dominant
+> remaining cost is local Docker disk I/O and SQL transaction log writes.  
+> On production-grade SQL Server hardware (SSD-backed, properly sized log file, Simple
+> recovery model) expect **60–180 s** for the same 1M-row file.  
+> Enable `ENABLE_CHUNKED_CSV=true` to reduce peak RSS from ~720 MB to ~150 MB
+> regardless of file size, at a small throughput cost.
+
+### Merge load (temp-table path)
+
+`merge_load` (used when `load_strategy = MERGE`) still uses `method="multi"` for the
+staging temp-table because the temp-table is small and dropped immediately.  If merge
+workflows start handling large files, apply the same `method=None` change there.
+
+---
+
+## Parallel ingestion considerations
+
+In production, multiple workflow trigger schedules may overlap.  Common contention
+scenarios and mitigations:
+
+### 1 — Two workflows writing to the same destination table
+
+If `wf-a` TRUNCATEs `dbo.dest_transactions` while `wf-b` is still inserting into it,
+`wf-b` will receive a lock wait or deadlock error.
+
+**Mitigation options:**
+- Schedule workflows with non-overlapping windows in Azure Logic Apps / Data Factory.
+- Use `load_strategy = APPEND` + a surrogate `batch_id` column so concurrent inserts
+  never conflict.
+- Use a staging table per workflow and merge into the final table in a post-step.
+
+### 2 — SQL Server transaction log pressure
+
+`TRUNCATE TABLE` is minimally logged, but a million-row `INSERT` generates significant
+transaction log growth.  If the log file reaches its auto-growth limit, the insert will
+block until auto-growth completes.
+
+**Indicators:** `wait_type = WRITELOG`, high `used_log_space_percent` from
+`DBCC SQLPERF(LOGSPACE)`.
+
+**Mitigation options:**
+- Pre-size the log file (`ALTER DATABASE … MODIFY FILE`) to avoid frequent auto-growth.
+- Set the recovery model to `SIMPLE` for staging/ingest databases (acceptable for
+  reload-safe pipelines).
+- Use chunked CSV ingestion (`ENABLE_CHUNKED_CSV=true`) — each chunk is a smaller
+  transaction.
+
+### 3 — Blocking from a killed/timed-out Python process
+
+If a Python process is killed mid-insert (e.g. by a scheduler timeout), its SQL
+transaction remains open until SQL Server detects the network drop (typically 30–60 s).
+Until then, other sessions trying to `TRUNCATE` the same table will block.
+
+**Diagnosis:**
+```sql
+-- Find blocking sessions
+SELECT session_id, blocking_session_id, wait_type, wait_time, status, command
+FROM sys.dm_exec_requests
+WHERE database_id = DB_ID('ingest_dev');
+
+-- Find locks on a specific table
+SELECT request_session_id, resource_type, request_mode, request_status
+FROM sys.dm_tran_locks
+WHERE resource_database_id   = DB_ID('ingest_dev')
+  AND resource_associated_entity_id = OBJECT_ID('dbo.dest_transactions_large');
+
+-- Kill the blocking session (replace 57 with actual session_id)
+-- KILL 57;
+```
+
+**Mitigation options:**
+- Set `LOCK_TIMEOUT` on the ingestion SQL connection (`SET LOCK_TIMEOUT 30000`).
+- Use a dedicated schema/table per workflow so a blocked workflow never blocks others.
+
+### 4 — Memory pressure (multiple large files in parallel)
+
+Each ingestion process loads an entire file into pandas before writing to SQL
+(unless `ENABLE_CHUNKED_CSV=true`).  For a 178 MB / 1M-row CSV the peak RSS is
+~300–500 MB per process.  Running 4 large-file workflows in parallel can exhaust
+available memory on a small VM/container.
+
+**Mitigation options:**
+- Enable chunked CSV: `ENABLE_CHUNKED_CSV=true` in `.env`.  Chunks default to 50 000
+  rows and keep peak RSS below ~150 MB regardless of file size.
+- Set container/VM memory limits and schedule large workflows off-peak.
+- Monitor `memory_peak_mb` in `log.sharepoint_ingestion_audit`.
+
+---
+
+## Memory and process footprint
+
+The ingestion engine captures peak RSS memory at key checkpoints using `psutil` (or a
+`ctypes`/`Psapi.dll` fallback on Windows):
+
+- Before file download
+- After file download
+- After DataFrame parse
+- After normalisation
+- After SQL load
+
+Peak values are written to `log.sharepoint_ingestion_audit.memory_peak_mb` and
+included in failure notification emails.
+
+---
+
+## SharePoint download throughput
+
+- Files are downloaded in a single `requests` call via the Graph/REST API.
+- Typical throughput: 5–30 MB/s depending on tenant throttling and proximity.
+- For very large files (>100 MB), the download itself may take 30–60 s and appear to
+  hang.  Check the audit log `duration_seconds` vs. `rows_scanned` to determine whether
+  the bottleneck is download or SQL insert.
+- Microsoft 429 (throttle) responses are retried automatically by the SharePoint client;
+  excessive throttling can add minutes to large runs.
+
+---
+
+## Failure email — resource telemetry
+
+From v2.0, failure emails include a **Resource telemetry** section:
+
+```
+Ingestion failure for process: config_id=4, workflow_id=wf-valid-transactions-large, ...
+File: valid_transactions_large.csv
+
+Error:
+Config 4 failed for file valid_transactions_large.csv: <error detail>
+
+Resource telemetry:
+  Rows scanned before failure : 750000
+  Peak memory (process)       : 423.2 MB
+  Elapsed time                : 312.4s
+  Host / runner               : (optional)
+
+NOTE: If multiple ingestion workflows run in parallel, check
+log.sharepoint_ingestion_audit and sys.dm_exec_requests on the SQL Server
+for blocking sessions, high log usage, or contention on the destination table
+before reprocessing this file.
+```
+
+### How to read the telemetry
+
+| Field | What it tells you |
+|---|---|
+| Rows scanned = 0, short elapsed time | Early failure — file parse, download, or schema error. No SQL impact. |
+| Rows scanned = N (some rows), moderate elapsed time | Failure mid-load. Destination table may be partially populated; check audit log. |
+| Rows scanned = full row count, long elapsed time | Failure during SQL commit/write phase — check for log pressure or blockers. |
+| High memory + failure | Possible OOM. Enable chunked CSV or increase container memory. |
+
+---
+
+## Diagnosing slow or hung runs
+
+Use `_diag_sql_blockers.py` in the project root:
+
+```bash
+python _diag_sql_blockers.py
+```
+
+This script reports:
+- Active requests on `ingest_dev` with blocking session IDs and wait types
+- Locks held on `dbo.dest_transactions_large`
+- Open transactions on `ingest_dev`
+- Current destination table row count
+
+For a stuck process (Python alive, 0 CPU, not progressing):
+
+1. Check for orphaned processes: `tasklist | findstr python.exe`
+2. Check SQL blocking with the script above
+3. If no blocker is found, the process is likely mid-download or mid-sort (pandas
+   internal).  Allow 2–3 minutes for 1M-row files after validation completes.
+4. If the process is still alive after 10 minutes with 0 CPU and 0 SQL activity,
+   kill and rerun — the table will be TRUNCATEd on the next `TRUNCATE` strategy run.
+
+---
+
+## Configuration reference
+
+| `.env` variable | Default | Purpose |
+|---|---|---|
+| `ENABLE_CHUNKED_CSV` | `false` | Stream CSV in 50 000-row chunks instead of loading the whole file into memory |
+| `INGEST_CHUNK_SIZE_ROWS` | `50000` | Rows per chunk (only applies when `ENABLE_CHUNKED_CSV=true`) |
+| `DEFAULT_LOAD_STRATEGY` | `TRUNCATE` | `TRUNCATE` or `APPEND` |
+| `NULL_ALERT_THRESHOLD` | `0.5` | Fraction of NULLs in a column before a validation warning is raised |
+
+---
+
+*Last updated: 2026-05-14*

@@ -19,6 +19,8 @@ folder_pairs = [
     ("/Documents/valid_transactions/Failed",        "/Documents/valid_transactions"),
     ("/Documents/valid_transactions_large/Failed",   "/Documents/valid_transactions_large"),
     ("/Documents/valid_customers/Failed",            "/Documents/valid_customers"),
+    ("/Documents/invalid_csv/Failed",                "/Documents/invalid_csv"),
+    ("/Documents/invalid_excel/Failed",              "/Documents/invalid_excel"),
 ]
 
 # Prefix site_path so these become server-relative

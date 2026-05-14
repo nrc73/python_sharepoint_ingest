@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -40,8 +41,112 @@ class EmailNotifier:
         return True
 
 
-def build_validation_email_body(process_name: str, issues: Iterable[str]) -> str:
-    lines = [f"Ingestion validation issues for process: {process_name}", "", "Issues:"]
-    for issue in issues:
+def build_validation_email_body(
+    process_name: str,
+    issues: Iterable[str],
+    *,
+    file_name: Optional[str] = None,
+    sheet_name: Optional[str] = None,
+    max_issue_lines: int = 15,
+) -> str:
+    issue_list = list(issues)
+    total_issues = len(issue_list)
+    severity_counts = Counter()
+    code_counts = Counter()
+
+    for issue in issue_list:
+        if issue.startswith("[") and "]" in issue:
+            severity = issue.split("]", 1)[0].strip("[]")
+            if severity:
+                severity_counts[severity] += 1
+
+        if ":" in issue:
+            left = issue.split(":", 1)[0]
+            if "]" in left:
+                code = left.rsplit("]", 1)[-1].strip()
+                if code:
+                    code_counts[code] += 1
+
+    lines = [f"Ingestion validation issues for process: {process_name}"]
+
+    if file_name:
+        lines.append(f"File: {file_name}")
+    if sheet_name:
+        lines.append(f"Sheet: {sheet_name}")
+
+    lines.extend(
+        [
+            "",
+            "Summary:",
+            f"- Total issues: {total_issues}",
+            f"- Error issues: {severity_counts.get('ERROR', 0)}",
+            f"- Warning issues: {severity_counts.get('WARNING', 0)}",
+        ]
+    )
+
+    if code_counts:
+        lines.append("- Issue groups:")
+        for code, count in code_counts.most_common(10):
+            lines.append(f"  - {code}: {count}")
+
+    lines.append("")
+    lines.append("Top issues:")
+    for issue in issue_list[:max_issue_lines]:
         lines.append(f"- {issue}")
+
+    if total_issues > max_issue_lines:
+        lines.append(f"- ... {total_issues - max_issue_lines} more issue(s) not shown")
+
+    return "\n".join(lines)
+
+
+def build_failure_email_body(
+    process_name: str,
+    error_message: str,
+    *,
+    file_name: Optional[str] = None,
+    rows_scanned: Optional[int] = None,
+    memory_peak_mb: Optional[float] = None,
+    duration_seconds: Optional[float] = None,
+    host_hint: Optional[str] = None,
+) -> str:
+    """Build a plain-text failure notification body that includes resource telemetry.
+
+    The resource fields are optional so the function remains backward compatible;
+    callers can omit them when the metrics are not yet available (e.g. early-phase
+    failures before any rows are read).
+
+    Including resource telemetry is especially useful in production environments
+    where multiple ingestion processes may run in parallel.  Operators can triage
+    whether a failure was caused by:
+        - a data/schema problem (low rows_scanned, early error)
+        - a resource pressure problem (high memory_peak_mb, long duration, OOM)
+        - a SQL blocking or contention problem (long duration, low rows_scanned)
+    """
+    lines = [
+        f"Ingestion failure for process: {process_name}",
+    ]
+    if file_name:
+        lines.append(f"File: {file_name}")
+
+    lines.append("")
+    lines.append("Error:")
+    lines.append(error_message)
+
+    lines.append("")
+    lines.append("Resource telemetry:")
+    lines.append(f"  Rows scanned before failure : {rows_scanned if rows_scanned is not None else 'n/a'}")
+    lines.append(f"  Peak memory (process)       : {f'{memory_peak_mb:.1f} MB' if memory_peak_mb is not None else 'n/a'}")
+    lines.append(f"  Elapsed time                : {f'{duration_seconds:.1f}s' if duration_seconds is not None else 'n/a'}")
+    if host_hint:
+        lines.append(f"  Host / runner               : {host_hint}")
+
+    lines.append("")
+    lines.append(
+        "NOTE: If multiple ingestion workflows run in parallel, check "
+        "log.sharepoint_ingestion_audit and sys.dm_exec_requests on the SQL Server "
+        "for blocking sessions, high log usage, or contention on the destination table "
+        "before reprocessing this file."
+    )
+
     return "\n".join(lines)

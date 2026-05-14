@@ -7,4 +7,5 @@ openpyxl>=3.1.2
 python-dotenv>=1.0.1
 SQLAlchemy>=2.0.31
 pyodbc>=5.1.0
+psutil>=6.0.0
 pytest>=8.2.2

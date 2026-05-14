@@ -15,3 +15,10 @@ temp/
 dist/
 build/
 *.egg-info/
+
+# Large generated test artifacts (>100 MB — exceeds GitHub file size limit)
+# Regenerate locally with: python tools/generate_sample_artifacts.py
+tests/sample_artifacts/valid/csv/valid_transactions_large.csv
+
+# Stray shell artifacts
+=

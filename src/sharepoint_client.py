@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Optional
@@ -124,10 +125,40 @@ class SharePointClient:
         response.raise_for_status()
         return response.json()
 
+    def _is_transient_request_error(self, exc: Exception) -> bool:
+        if _requests is None:
+            return False
+
+        req_exc = _requests.exceptions
+        if isinstance(exc, (req_exc.Timeout, req_exc.ConnectionError, req_exc.ChunkedEncodingError)):
+            return True
+
+        if isinstance(exc, req_exc.HTTPError):
+            response = getattr(exc, "response", None)
+            status = getattr(response, "status_code", None)
+            if status in {408, 409, 425, 429, 500, 502, 503, 504}:
+                return True
+
+        return False
+
     def _get_bytes(self, url: str) -> bytes:
-        response = _requests.get(url, headers=self._auth_headers(), timeout=120)
-        response.raise_for_status()
-        return response.content
+        attempts = 4
+        last_exc: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                response = _requests.get(url, headers=self._auth_headers(), timeout=180)
+                response.raise_for_status()
+                return response.content
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= attempts or not self._is_transient_request_error(exc):
+                    raise
+                time.sleep(min(8, 2 ** (attempt - 1)))
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Unexpected download failure without exception details")
 
     def _patch_json(self, url: str, body: dict) -> dict:
         headers = self._auth_headers()

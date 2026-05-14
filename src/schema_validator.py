@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
+
 import pandas as pd
 
 from src.models import ValidationIssue
+
+
+MANAGED_DESTINATION_COLUMNS = {
+    "created_date",
+    "modified_date",
+}
 
 
 def _normalize(name: str) -> str:
@@ -43,6 +51,36 @@ def _safe_max_string_length(series: pd.Series) -> int:
     return non_null.astype(str).str.len().max()
 
 
+def _numeric_digit_profile(value: object) -> tuple[int, int] | None:
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+
+    try:
+        dec = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return None
+
+    # normalized tuple: sign, digits, exponent
+    sign, digits, exponent = dec.as_tuple()
+    total_digits = len(digits)
+    if exponent >= 0:
+        # e.g. 12300, exp=2 => fraction=0
+        fraction_digits = 0
+        total_digits = total_digits + exponent
+    else:
+        fraction_digits = -exponent
+        # keep at least one integer digit for values like 0.01
+        if total_digits < fraction_digits:
+            total_digits = fraction_digits
+
+    if total_digits == 0:
+        total_digits = 1
+
+    return total_digits, fraction_digits
+
+
 def validate_source_against_destination(
     source_df: pd.DataFrame,
     destination_columns: list[dict],
@@ -58,6 +96,8 @@ def validate_source_against_destination(
     for col in destination_columns:
         col_name = str(col["column_name"])
         key = _normalize(col_name)
+        if key in MANAGED_DESTINATION_COLUMNS:
+            continue
         dest_map[key] = col
         dest_order.append(key)
 
@@ -130,6 +170,58 @@ def validate_source_against_destination(
                         details=f"source_max_len={max_len}, destination_max_len={dest_len}",
                     )
                 )
+
+        if source_family == "numeric" and dest_family == "numeric":
+            precision = dest_meta.get("numeric_precision")
+            scale = dest_meta.get("numeric_scale")
+            if precision is not None:
+                try:
+                    max_precision = int(precision)
+                except (TypeError, ValueError):
+                    max_precision = None
+                try:
+                    max_scale = int(scale) if scale is not None else 0
+                except (TypeError, ValueError):
+                    max_scale = 0
+
+                if max_precision is not None and max_precision > 0:
+                    observed_max_precision = 0
+                    observed_max_scale = 0
+                    for raw in source_series.dropna():
+                        profile = _numeric_digit_profile(raw)
+                        if profile is None:
+                            continue
+                        total_digits, fraction_digits = profile
+                        observed_max_precision = max(observed_max_precision, total_digits)
+                        observed_max_scale = max(observed_max_scale, fraction_digits)
+
+                    if observed_max_precision > max_precision:
+                        issues.append(
+                            ValidationIssue(
+                                severity="WARNING",
+                                code="NUMERIC_PRECISION_EXCEEDED",
+                                message=f"Numeric precision exceeded for column '{source_name}'.",
+                                details=(
+                                    f"source_max_precision={observed_max_precision}, "
+                                    f"destination_precision={max_precision}, "
+                                    f"destination_scale={max_scale}"
+                                ),
+                            )
+                        )
+
+                    if observed_max_scale > max_scale:
+                        issues.append(
+                            ValidationIssue(
+                                severity="WARNING",
+                                code="NUMERIC_SCALE_EXCEEDED",
+                                message=f"Numeric scale exceeded for column '{source_name}'.",
+                                details=(
+                                    f"source_max_scale={observed_max_scale}, "
+                                    f"destination_scale={max_scale}, "
+                                    f"destination_precision={max_precision}"
+                                ),
+                            )
+                        )
 
         null_ratio = float(source_series.isna().mean()) if len(source_series) else 0.0
         if null_ratio >= null_alert_threshold:

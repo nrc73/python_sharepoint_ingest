@@ -1,4 +1,4 @@
-CustomerName,SignupDate,CreditLimit
-No ID Customer,2025-01-01,1000.0
-,2025-01-02,1001.0
-Null Date Customer,,1002.0
+CustomerId,TransactionDate,Amount,Currency,Status
+,2025-01-01,20.0,AUD,COMPLETE
+CUST01002,,21.87,USD,COMPLETE
+CUST01003,2025-01-03,,AUD,COMPLETE

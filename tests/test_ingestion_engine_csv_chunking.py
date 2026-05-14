@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from io import BytesIO
 import logging
 from types import SimpleNamespace
@@ -171,6 +172,44 @@ def test_datetime_column_infers_ambiguous_values_from_unambiguous_dmy_hints() ->
     assert str(normalized.loc[1, "txn_date"].date()) == "2026-04-03"
 
 
+def test_detect_excel_datetime_stored_as_text_warning_issue() -> None:
+    engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+    source = pd.DataFrame(
+        {
+            "signup_date": ["01/01/2025", "31/01/2025", "2025-02-01", None],
+            "customer_id": ["C1", "C2", "C3", "C4"],
+        }
+    )
+    destination_columns = [
+        {"column_name": "signup_date", "data_type": "datetime"},
+        {"column_name": "customer_id", "data_type": "varchar"},
+    ]
+
+    issues = engine._detect_excel_datetime_text_issues(source, destination_columns)
+
+    assert len(issues) == 1
+    assert issues[0].code == "EXCEL_DATETIME_STORED_AS_TEXT"
+    assert "count=3" in str(issues[0].details)
+
+
+def test_detect_excel_datetime_stored_as_text_ignores_true_datetime_values() -> None:
+    engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+    source = pd.DataFrame(
+        {
+            "signup_date": [datetime(2025, 1, 1), datetime(2025, 1, 2)],
+            "customer_id": ["C1", "C2"],
+        }
+    )
+    destination_columns = [
+        {"column_name": "signup_date", "data_type": "datetime"},
+        {"column_name": "customer_id", "data_type": "varchar"},
+    ]
+
+    issues = engine._detect_excel_datetime_text_issues(source, destination_columns)
+
+    assert issues == []
+
+
 def test_apply_ingestion_metadata_sets_source_file_name_for_csv() -> None:
     engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
     config = _config("APPEND")
@@ -292,3 +331,33 @@ def test_resolve_load_strategy_rejects_unsupported_merge_value() -> None:
 
     with pytest.raises(ValueError, match="Unsupported load_strategy"):
         engine._resolve_load_strategy("merge")
+
+
+def test_non_chunked_file_logs_validation_and_import_progress(caplog: pytest.LogCaptureFixture) -> None:
+    payload = b"id,value\n1,a\n2,b\n3,c\n"
+    sp = DummySharePointClient(payload)
+    sql = DummySqlClient()
+    logger = logging.getLogger("test.progress.nonchunk")
+    engine = IngestionEngine(_settings(chunked=False), sql, sp, logger)
+
+    caplog.set_level(logging.INFO, logger=logger.name)
+    engine._process_single_file(_config("APPEND"), "/folder/file.csv", "file.csv")
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("validation progress: 100%" in m for m in messages)
+    assert any("import progress: 100%" in m for m in messages)
+
+
+def test_chunked_file_logs_validation_and_import_progress(caplog: pytest.LogCaptureFixture) -> None:
+    payload = b"id,value\n1,a\n2,b\n3,c\n"
+    sp = DummySharePointClient(payload)
+    sql = DummySqlClient()
+    logger = logging.getLogger("test.progress.chunked")
+    engine = IngestionEngine(_settings(chunked=True, chunk_size=2), sql, sp, logger)
+
+    caplog.set_level(logging.INFO, logger=logger.name)
+    engine._process_single_file(_config("TRUNCATE"), "/folder/file.csv", "file.csv")
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("validation progress: 100%" in m and "bytes" in m for m in messages)
+    assert any("import progress: 100%" in m and "bytes" in m for m in messages)

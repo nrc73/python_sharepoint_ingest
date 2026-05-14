@@ -189,28 +189,67 @@ class SqlClient:
         status: str,
         records_loaded: Optional[int],
         message: Optional[str],
+        batch_id: Optional[str] = None,
+        rows_scanned: Optional[int] = None,
+        validation_error_count: Optional[int] = None,
+        memory_peak_mb: Optional[float] = None,
+        duration_seconds: Optional[float] = None,
     ) -> None:
         sql_text = """
         IF OBJECT_ID('log.sharepoint_ingestion_audit', 'U') IS NOT NULL
         BEGIN
-            INSERT INTO log.sharepoint_ingestion_audit (
-                config_id,
-                workflow_id,
-                process_id,
-                file_name,
-                status,
-                records_loaded,
-                message
-            )
-            VALUES (
-                :config_id,
-                :workflow_id,
-                TRY_CONVERT(uniqueidentifier, :process_id),
-                :file_name,
-                :status,
-                :records_loaded,
-                :message
-            );
+            IF COL_LENGTH('log.sharepoint_ingestion_audit', 'batch_id') IS NOT NULL
+            BEGIN
+                INSERT INTO log.sharepoint_ingestion_audit (
+                    config_id,
+                    workflow_id,
+                    process_id,
+                    file_name,
+                    status,
+                    records_loaded,
+                    batch_id,
+                    rows_scanned,
+                    validation_error_count,
+                    memory_peak_mb,
+                    duration_seconds,
+                    message
+                )
+                VALUES (
+                    :config_id,
+                    :workflow_id,
+                    TRY_CONVERT(uniqueidentifier, :process_id),
+                    :file_name,
+                    :status,
+                    :records_loaded,
+                    TRY_CONVERT(uniqueidentifier, :batch_id),
+                    :rows_scanned,
+                    :validation_error_count,
+                    :memory_peak_mb,
+                    :duration_seconds,
+                    :message
+                );
+            END
+            ELSE
+            BEGIN
+                INSERT INTO log.sharepoint_ingestion_audit (
+                    config_id,
+                    workflow_id,
+                    process_id,
+                    file_name,
+                    status,
+                    records_loaded,
+                    message
+                )
+                VALUES (
+                    :config_id,
+                    :workflow_id,
+                    TRY_CONVERT(uniqueidentifier, :process_id),
+                    :file_name,
+                    :status,
+                    :records_loaded,
+                    :message
+                );
+            END
         END
         """
         self.execute(
@@ -223,6 +262,11 @@ class SqlClient:
                 "status": status,
                 "records_loaded": records_loaded,
                 "message": message,
+                "batch_id": batch_id,
+                "rows_scanned": rows_scanned,
+                "validation_error_count": validation_error_count,
+                "memory_peak_mb": memory_peak_mb,
+                "duration_seconds": duration_seconds,
             },
         )
 
@@ -241,19 +285,19 @@ class SqlClient:
 
         schema, table = _parse_table_name(table_name)
 
-        # SQL Server / pyodbc caps at 2100 parameters per statement.
-        # Use 2099 (not 2100) so that num_cols * chunksize is strictly < 2100.
-        num_cols = max(len(df.columns), 1)
-        safe_chunksize = max(1, min(300, 2099 // num_cols))
-
+        # Use method=None (SQLAlchemy executemany) so that pyodbc's fast_executemany=True
+        # path is exercised.  This is significantly faster than method="multi" for large
+        # DataFrames because pyodbc vectorises the entire batch rather than building a
+        # large VALUES(...) string per chunk.
+        # chunksize of 10_000 gives a good balance of memory vs round-trips.
         df.to_sql(
             name=table,
             schema=schema,
             con=self._engine,
             if_exists="append",
             index=False,
-            chunksize=safe_chunksize,
-            method="multi",
+            chunksize=10_000,
+            method=None,
         )
 
     def merge_load(self, df: pd.DataFrame, table_name: str, merge_keys: list[str]) -> None:
