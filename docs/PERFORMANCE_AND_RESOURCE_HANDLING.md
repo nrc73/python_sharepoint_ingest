@@ -4,17 +4,21 @@ This document describes performance characteristics, known resource pressures, a
 operational guidance for the SharePoint ingestion pipeline — in particular for
 production environments where multiple workflow instances may run in parallel.
 
+For a consolidated catalog of validation families and notification routing, see
+[`VALIDATION_AND_NOTIFICATION_REFERENCE.md`](VALIDATION_AND_NOTIFICATION_REFERENCE.md).
+
 ---
 
 ## Table of contents
 
 1. [SQL Server insert performance](#sql-server-insert-performance)
 2. [Parallel ingestion considerations](#parallel-ingestion-considerations)
-3. [Memory and process footprint](#memory-and-process-footprint)
-4. [SharePoint download throughput](#sharepoint-download-throughput)
-5. [Failure email — resource telemetry](#failure-email--resource-telemetry)
-6. [Diagnosing slow or hung runs](#diagnosing-slow-or-hung-runs)
-7. [Configuration reference](#configuration-reference)
+3. [APPEND reload — primary key violation risks](#append-reload--primary-key-violation-risks)
+4. [Memory and process footprint](#memory-and-process-footprint)
+5. [SharePoint download throughput](#sharepoint-download-throughput)
+6. [Failure email — resource telemetry](#failure-email--resource-telemetry)
+7. [Diagnosing slow or hung runs](#diagnosing-slow-or-hung-runs)
+8. [Configuration reference](#configuration-reference)
 
 ---
 
@@ -127,6 +131,89 @@ available memory on a small VM/container.
 
 ---
 
+## APPEND reload — primary key violation risks
+
+When a config uses `load_strategy = APPEND`, each run **adds** rows to the destination table
+rather than replacing them.  Re-processing the same file (or a corrected version of it) can
+therefore cause a **primary key constraint violation** if the destination table has a unique
+or primary key index on any of the ingested columns.
+
+### Two-layer defence
+
+The engine protects against PK violations in two complementary stages:
+
+#### 1 — Intra-file pre-flight check (Python, before any SQL)
+
+Before calling `append_load`, `_check_for_intra_file_duplicate_keys` scans the incoming
+DataFrame for rows that share the same value(s) on the configured `merge_key_columns`.
+
+- Runs on the full DataFrame for non-chunked files.
+- Runs on the **first chunk only** for chunked CSV processing, which is sufficient to
+  catch duplicates within a single reload of the same file.
+- Raises `ValueError: PRIMARY_KEY_VIOLATION: …` immediately if duplicates are found,
+  **before any SQL write is attempted**.  This prevents partial inserts in chunked runs.
+
+#### 2 — SQL `IntegrityError` wrapper (SQLAlchemy, as a safety net)
+
+If the intra-file check passes but a PK constraint violation still occurs at the database
+level (e.g. because the same key already exists from a prior run), `SqlClient.append_load`
+catches the SQLAlchemy `IntegrityError` and re-raises it as
+`ValueError: PRIMARY_KEY_VIOLATION: Appending … failed due to a primary key / unique …`.
+
+This ensures the engine's `_process_config` exception handler can identify PK violations
+by string prefix and route them to `_notify_pk_violation` rather than the generic
+`_notify_failure` handler.
+
+### Dedicated PK violation email
+
+When a PK violation is caught, a purpose-built notification email is sent that includes:
+
+- File name and destination table
+- Configured key column(s)
+- Duplicate row count and up to 5 sample key values (from the intra-file check)
+- Resource telemetry (rows scanned, peak memory, elapsed time)
+- Three remediation options:
+
+  | Option | When to use |
+  |---|---|
+  | **FULL RELOAD** | Switch config to `TRUNCATE` strategy, re-upload the corrected file and rerun. |
+  | **UPSERT** | Switch config to `MERGE` strategy so duplicate keys are updated rather than inserted. |
+  | **MANUAL CLEAN** | Delete the duplicate rows from the destination table and re-upload only the delta. |
+
+### Reload workflow for APPEND configs
+
+```
+1. Identify duplicate keys from the notification email (key column(s), sample values).
+2. Choose a remediation option:
+   a) FULL RELOAD:
+      - Set load_strategy = TRUNCATE in the config row.
+      - Re-upload the corrected file to the SharePoint process folder.
+      - Rerun the workflow.
+      - Reset load_strategy = APPEND after the successful run.
+   b) UPSERT:
+      - Set load_strategy = MERGE and configure merge_key_columns.
+      - Re-upload the corrected file.
+      - Rerun.
+   c) MANUAL CLEAN:
+      - Run a DELETE against the destination table for the affected key values.
+      - Re-upload only the new/corrected rows.
+      - Rerun with load_strategy = APPEND unchanged.
+3. Verify the audit log entry shows status = SUCCESS and the expected records_loaded count.
+```
+
+### Key column configuration
+
+`merge_key_columns` (comma-separated) is used by both the intra-file duplicate check and
+the `MERGE` load strategy.  If left blank, the engine falls back to:
+
+1. Primary key columns discovered from `INFORMATION_SCHEMA.KEY_COLUMN_USAGE`
+2. The first destination column (last resort)
+
+Always configure `merge_key_columns` explicitly for APPEND configs to ensure accurate
+pre-flight detection.
+
+---
+
 ## Memory and process footprint
 
 The ingestion engine captures peak RSS memory at key checkpoints using `psutil` (or a
@@ -225,4 +312,4 @@ For a stuck process (Python alive, 0 CPU, not progressing):
 
 ---
 
-*Last updated: 2026-05-14*
+*Last updated: 2026-05-15*

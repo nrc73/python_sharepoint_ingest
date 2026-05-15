@@ -8,6 +8,7 @@ from typing import Any, Optional
 import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError as SqlIntegrityError
 
 from src.config import SqlSettings
 from src.models import IngestionConfig
@@ -290,15 +291,24 @@ class SqlClient:
         # DataFrames because pyodbc vectorises the entire batch rather than building a
         # large VALUES(...) string per chunk.
         # chunksize of 10_000 gives a good balance of memory vs round-trips.
-        df.to_sql(
-            name=table,
-            schema=schema,
-            con=self._engine,
-            if_exists="append",
-            index=False,
-            chunksize=10_000,
-            method=None,
-        )
+        try:
+            df.to_sql(
+                name=table,
+                schema=schema,
+                con=self._engine,
+                if_exists="append",
+                index=False,
+                chunksize=10_000,
+                method=None,
+            )
+        except SqlIntegrityError as exc:
+            raise ValueError(
+                f"PRIMARY_KEY_VIOLATION: Appending rows to '{table_name}' failed due to a "
+                f"primary key or unique constraint violation. The file may have already been "
+                f"loaded (reload scenario) or contains duplicate key values within the file "
+                f"itself. Use load_strategy=TRUNCATE for a full reload or load_strategy=MERGE "
+                f"with merge_key_columns for an upsert. Original error: {exc}"
+            ) from exc
 
     def merge_load(self, df: pd.DataFrame, table_name: str, merge_keys: list[str]) -> None:
         if not merge_keys:

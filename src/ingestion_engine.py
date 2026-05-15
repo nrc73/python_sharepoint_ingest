@@ -27,7 +27,7 @@ from src.file_processors import (
     read_excel_from_bytes,
 )
 from src.models import IngestionConfig, IngestionSummary, ValidationIssue
-from src.notifications import EmailNotifier, build_failure_email_body, build_validation_email_body
+from src.notifications import EmailNotifier, build_failure_email_body, build_pk_violation_email_body, build_validation_email_body
 from src.schema_validator import validate_source_against_destination
 from src.sharepoint_client import SharePointClient
 from src.sql_client import SqlClient
@@ -367,14 +367,25 @@ class IngestionEngine:
                             failed_folder,
                         )
 
-                self._notify_failure(
-                    config,
-                    err,
-                    file_name=item.name,
-                    rows_scanned=self._last_file_rows_scanned,
-                    memory_peak_mb=self._capture_memory_peak_mb(),
-                    duration_seconds=round(time.perf_counter() - started, 2),
-                )
+                is_pk_violation = str(exc).startswith("PRIMARY_KEY_VIOLATION:")
+                if is_pk_violation:
+                    self._notify_pk_violation(
+                        config,
+                        err,
+                        file_name=item.name,
+                        rows_scanned=self._last_file_rows_scanned,
+                        memory_peak_mb=self._capture_memory_peak_mb(),
+                        duration_seconds=round(time.perf_counter() - started, 2),
+                    )
+                else:
+                    self._notify_failure(
+                        config,
+                        err,
+                        file_name=item.name,
+                        rows_scanned=self._last_file_rows_scanned,
+                        memory_peak_mb=self._capture_memory_peak_mb(),
+                        duration_seconds=round(time.perf_counter() - started, 2),
+                    )
 
         return result
 
@@ -437,6 +448,7 @@ class IngestionEngine:
         elif precheck_issues:
             self._publish_validation_issues(config, precheck_issues)
 
+        self._check_for_intra_file_duplicate_keys(dataframe, config, resolved_load_strategy)
         self._load_dataframe(config, dataframe, load_strategy=resolved_load_strategy)
         self._log_phase_progress(
             phase="import",
@@ -511,6 +523,9 @@ class IngestionEngine:
 
             if config.schema_check_enabled and first_chunk:
                 self._run_schema_checks(config, dataframe, destination_columns=destination_columns)
+
+            if first_chunk:
+                self._check_for_intra_file_duplicate_keys(dataframe, config, resolved_load_strategy)
 
             self._load_dataframe(
                 config,
@@ -891,6 +906,51 @@ class IngestionEngine:
             f"Unsupported load_strategy '{raw_value}'. Allowed values are TRUNCATE or APPEND."
         )
 
+    def _check_for_intra_file_duplicate_keys(
+        self,
+        dataframe: pd.DataFrame,
+        config: IngestionConfig,
+        resolved_load_strategy: str,
+    ) -> None:
+        """Pre-flight check: detect duplicate primary key values within the incoming
+        DataFrame before any SQL insert is attempted.
+
+        Only runs when load_strategy is APPEND.  Raising here (before touching the
+        database) ensures no partial data is committed in chunked CSV scenarios and
+        provides a clear, actionable error message rather than a raw DB exception.
+        """
+        if resolved_load_strategy != "APPEND":
+            return
+
+        try:
+            key_columns = self._resolve_merge_keys(config)
+        except Exception:
+            # If key resolution fails (e.g. no DB connectivity, no columns configured),
+            # skip the pre-flight check rather than masking a legitimate connection error.
+            return
+
+        available_keys = [k for k in key_columns if k in dataframe.columns]
+        if not available_keys:
+            return
+
+        duplicated_mask = dataframe.duplicated(subset=available_keys, keep=False)
+        if not duplicated_mask.any():
+            return
+
+        dup_count = int(duplicated_mask.sum())
+        sample_records = (
+            dataframe.loc[duplicated_mask, available_keys]
+            .drop_duplicates()
+            .head(5)
+            .to_dict(orient="records")
+        )
+        raise ValueError(
+            f"PRIMARY_KEY_VIOLATION: File contains {dup_count} rows with duplicate values "
+            f"on key column(s) {available_keys} for table '{config.staging_table_name}'. "
+            f"This will cause a primary key constraint violation when appended. "
+            f"Sample duplicate key values: {sample_records}"
+        )
+
     def _resolve_merge_keys(self, config: IngestionConfig) -> list[str]:
         if config.merge_key_columns:
             return [c.strip() for c in config.merge_key_columns.split(",") if c.strip()]
@@ -942,6 +1002,59 @@ class IngestionEngine:
         sent = self.notifier.send(config.error_notification_email_address, subject, body)
         if sent:
             self.logger.info("Failure notification sent to %s", config.error_notification_email_address)
+
+    def _notify_pk_violation(
+        self,
+        config: IngestionConfig,
+        error_message: str,
+        *,
+        file_name: Optional[str] = None,
+        rows_scanned: Optional[int] = None,
+        memory_peak_mb: Optional[float] = None,
+        duration_seconds: Optional[float] = None,
+    ) -> None:
+        """Send a targeted PK violation email with remediation guidance."""
+        subject = f"SharePoint ingestion PRIMARY KEY VIOLATION - config {config.id}"
+        process_name = (
+            f"config_id={config.id}, workflow_id={config.workflow_id}, "
+            f"process_id={config.process_id}, env={self.settings.env_name}"
+        )
+
+        key_columns: list[str] = []
+        if config.merge_key_columns:
+            key_columns = [c.strip() for c in config.merge_key_columns.split(",") if c.strip()]
+
+        duplicate_count: Optional[int] = None
+        sample_values: Optional[list] = None
+
+        dup_match = re.search(r"(\d+) rows with duplicate", error_message)
+        if dup_match:
+            duplicate_count = int(dup_match.group(1))
+
+        sample_match = re.search(r"Sample duplicate key values: (\[.+\])", error_message)
+        if sample_match:
+            try:
+                import ast
+                sample_values = ast.literal_eval(sample_match.group(1))
+            except Exception:
+                pass
+
+        body = build_pk_violation_email_body(
+            process_name=process_name,
+            error_message=error_message,
+            file_name=file_name,
+            table_name=config.staging_table_name,
+            key_columns=key_columns or None,
+            duplicate_count=duplicate_count,
+            sample_values=sample_values,
+            rows_scanned=rows_scanned,
+            memory_peak_mb=memory_peak_mb,
+            duration_seconds=duration_seconds,
+        )
+
+        sent = self.notifier.send(config.error_notification_email_address, subject, body)
+        if sent:
+            self.logger.info("PK violation notification sent to %s", config.error_notification_email_address)
 
     @staticmethod
     def _extract_sheet_name_from_issues(issues: list[ValidationIssue]) -> Optional[str]:

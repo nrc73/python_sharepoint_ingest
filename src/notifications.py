@@ -100,6 +100,81 @@ def build_validation_email_body(
     return "\n".join(lines)
 
 
+def build_pk_violation_email_body(
+    process_name: str,
+    error_message: str,
+    *,
+    file_name: Optional[str] = None,
+    table_name: Optional[str] = None,
+    key_columns: Optional[list[str]] = None,
+    duplicate_count: Optional[int] = None,
+    sample_values: Optional[list[dict]] = None,
+    rows_scanned: Optional[int] = None,
+    memory_peak_mb: Optional[float] = None,
+    duration_seconds: Optional[float] = None,
+) -> str:
+    """Build a plain-text email body for a PRIMARY_KEY_VIOLATION failure.
+
+    Provides targeted remediation guidance alongside the standard resource
+    telemetry so operators can quickly determine whether this is a reload
+    scenario (file already loaded), an intra-file duplicate issue, or a
+    parallel-write contention problem.
+    """
+    lines = [
+        f"PRIMARY KEY VIOLATION — ingestion failure for process: {process_name}",
+    ]
+    if file_name:
+        lines.append(f"File        : {file_name}")
+    if table_name:
+        lines.append(f"Table       : {table_name}")
+    if key_columns:
+        lines.append(f"Key columns : {', '.join(key_columns)}")
+
+    lines.append("")
+    lines.append("Error:")
+    lines.append(error_message)
+
+    if duplicate_count is not None or sample_values:
+        lines.append("")
+        lines.append("Duplicate key detail:")
+        if duplicate_count is not None:
+            lines.append(f"  Rows with duplicate key values : {duplicate_count}")
+        if sample_values:
+            lines.append("  Sample duplicate values:")
+            for sv in sample_values[:5]:
+                lines.append(f"    {sv}")
+
+    lines.append("")
+    lines.append("Remediation options:")
+    lines.append(
+        "  1. FULL RELOAD   — change load_strategy to TRUNCATE (or TRUNCATE_RELOAD) in "
+        "config.sharepoint_ingestion. The table will be cleared before each load."
+    )
+    lines.append(
+        "  2. UPSERT        — change load_strategy to MERGE and set merge_key_columns to "
+        "the primary key column(s). Existing rows will be updated; new rows inserted."
+    )
+    lines.append(
+        "  3. MANUAL CLEAN  — delete the already-loaded rows from the target table and "
+        "restore the file to the SharePoint process folder to trigger a re-run."
+    )
+
+    lines.append("")
+    lines.append("Resource telemetry:")
+    lines.append(f"  Rows scanned before failure : {rows_scanned if rows_scanned is not None else 'n/a'}")
+    lines.append(f"  Peak memory (process)       : {f'{memory_peak_mb:.1f} MB' if memory_peak_mb is not None else 'n/a'}")
+    lines.append(f"  Elapsed time                : {f'{duration_seconds:.1f}s' if duration_seconds is not None else 'n/a'}")
+
+    lines.append("")
+    lines.append(
+        "NOTE: If rows_scanned > 0 and the violation was raised by the database (not the "
+        "pre-flight check), earlier chunks may have already been committed to the target "
+        "table. Inspect the table before reprocessing."
+    )
+
+    return "\n".join(lines)
+
+
 def build_failure_email_body(
     process_name: str,
     error_message: str,
