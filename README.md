@@ -127,8 +127,14 @@ pip install -r requirements.txt
 2) Configure environment
 
 ```powershell
-copy .env.example .env
+python tools\bootstrap_env.py
 ```
+
+This bootstrap command will:
+
+- create `.env` from `.env.example` when `.env` does not exist
+- validate that `KEY_VAULT_URL` is present and non-empty
+- leave existing `.env` unchanged
 
 3) Start local SQL container
 

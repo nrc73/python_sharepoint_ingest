@@ -28,6 +28,12 @@ def _resolve_target_envs(env_arg: str) -> list[str]:
 
 def _run_for_env(env_name: str) -> None:
     settings = load_settings(env_override=env_name)
+    if not settings.key_vault.vault_url.strip():
+        raise ValueError(
+            "KEY_VAULT_URL is not configured. "
+            "Run 'python tools/bootstrap_env.py' or set KEY_VAULT_URL in .env."
+        )
+
     provider = KeyVaultSecretProvider(settings.key_vault)
     client_id, client_secret, tenant_id = provider.get_sharepoint_credentials(env_name)
 
