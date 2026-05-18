@@ -83,3 +83,28 @@ Optional controls:
 
 - `--fail-on critical` to fail CI/pre-run checks at `CRITICAL` or worse
 - `--warn-days 30 --high-warn-days 14 --critical-days 7` to tune thresholds
+- `--notify-on warn|high_warn|critical|fail` for consolidated email threshold
+- `--notify-email-to` and `--notify-email-cc` for To/Cc recipients (comma/semicolon-separated)
+
+Example with one consolidated notification email per run:
+
+```bash
+python sharepoint_setup/spn_healthcheck_test.py \
+  --env all \
+  --notify-on warn \
+  --notify-email-to "ops@example.com;platform@example.com" \
+  --notify-email-cc "manager@example.com,security@example.com"
+```
+
+Safe simulation example (no Azure-side expiry updates required):
+
+```bash
+python sharepoint_setup/spn_healthcheck_test.py \
+  --env prod \
+  --simulate-expiry-days 20 \
+  --notify-on warn \
+  --notify-email-to "ops@example.com" \
+  --notify-email-cc "manager@example.com"
+```
+
+Simulation mode marks credential/key-vault expiry lines as `SIMULATED`.

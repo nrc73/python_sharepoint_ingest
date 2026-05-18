@@ -263,6 +263,31 @@ Useful options:
 
 - `--fail-on critical` (fail pipeline when status is CRITICAL or worse)
 - `--include-key-credentials` (also evaluate certificate credentials)
+- `--notify-on warn|high_warn|critical|fail` (email threshold)
+- `--notify-email-to` / `--notify-email-cc` (single consolidated email recipients)
+
+Consolidated notification example (one email per run, subject includes highest severity):
+
+```bash
+python sharepoint_setup/spn_healthcheck_test.py \
+  --env all \
+  --notify-on warn \
+  --notify-email-to "ops@example.com;platform@example.com" \
+  --notify-email-cc "manager@example.com,security@example.com"
+```
+
+Safe simulation example (no Azure expiry metadata/credential changes):
+
+```bash
+python sharepoint_setup/spn_healthcheck_test.py \
+  --env prod \
+  --simulate-expiry-days 20 \
+  --notify-on warn \
+  --notify-email-to "ops@example.com" \
+  --notify-email-cc "manager@example.com"
+```
+
+When simulation is enabled, output and email details are marked with `SIMULATED`.
 
 ## 5c) Layer 5 — Validate SQL Database Mail capability (`sp_send_dbmail`)
 

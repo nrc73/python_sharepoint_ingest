@@ -63,9 +63,21 @@ BEGIN
         load_strategy VARCHAR(30) NULL,
         merge_key_columns VARCHAR(400) NULL,
         column_mapping_json VARCHAR(MAX) NULL,
-        created_date DATETIME DEFAULT GETDATE(),
-        modified_date DATETIME DEFAULT GETDATE()
+        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
     );
+END;
+
+IF COL_LENGTH('config.sharepoint_ingestion', 'sp_ingest_created_utc') IS NULL
+    AND COL_LENGTH('config.sharepoint_ingestion', 'created_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'config.sharepoint_ingestion.created_date', 'sp_ingest_created_utc', 'COLUMN';
+END;
+
+IF COL_LENGTH('config.sharepoint_ingestion', 'sp_ingest_modified_utc') IS NULL
+    AND COL_LENGTH('config.sharepoint_ingestion', 'modified_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'config.sharepoint_ingestion.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
 END;
 
 IF OBJECT_ID('log.sharepoint_ingestion_audit', 'U') IS NULL
@@ -79,8 +91,14 @@ BEGIN
         status VARCHAR(20) NOT NULL,
         records_loaded INT NULL,
         message VARCHAR(MAX) NULL,
-        created_date DATETIME NOT NULL DEFAULT GETDATE()
+        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
     );
+END;
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'sp_ingest_created_utc') IS NULL
+    AND COL_LENGTH('log.sharepoint_ingestion_audit', 'created_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'log.sharepoint_ingestion_audit.created_date', 'sp_ingest_created_utc', 'COLUMN';
 END;
 
 IF OBJECT_ID('dbo.sample_ingestion_target', 'U') IS NULL
@@ -91,10 +109,22 @@ BEGIN
         amount DECIMAL(18,2) NULL,
         effective_date DATE NULL,
         source_file_name VARCHAR(255) NULL,
-        created_date DATETIME NOT NULL DEFAULT GETDATE(),
-        modified_date DATETIME NOT NULL DEFAULT GETDATE(),
+        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_sample_ingestion_target PRIMARY KEY (business_key)
     );
+END;
+
+IF COL_LENGTH('dbo.sample_ingestion_target', 'sp_ingest_created_utc') IS NULL
+    AND COL_LENGTH('dbo.sample_ingestion_target', 'created_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'dbo.sample_ingestion_target.created_date', 'sp_ingest_created_utc', 'COLUMN';
+END;
+
+IF COL_LENGTH('dbo.sample_ingestion_target', 'sp_ingest_modified_utc') IS NULL
+    AND COL_LENGTH('dbo.sample_ingestion_target', 'modified_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'dbo.sample_ingestion_target.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
 END;
 "@
 

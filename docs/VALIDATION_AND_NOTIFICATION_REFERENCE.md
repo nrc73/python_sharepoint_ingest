@@ -26,6 +26,12 @@ It is intended as a single handoff artifact for external documentation and opera
 
 ### Covered checks
 
+> **System-managed audit fields**: `sp_ingest_created_utc` and
+> `sp_ingest_modified_utc` are framework-managed ingestion fields and are excluded
+> from source-vs-destination column checks and datetime/text warning generation.
+> Generic business fields such as `created_date` and `modified_date` are treated
+> as normal data columns and validated like any other field.
+
 1. Missing expected destination columns in source (`MISSING_DEST_COLUMNS_IN_SOURCE`, ERROR)
 2. Additional source columns not in destination (`ADDITIONAL_SOURCE_COLUMNS`, WARNING)
 3. Source/destination column ordering drift (`COLUMN_REORDERING_DETECTED`, WARNING)

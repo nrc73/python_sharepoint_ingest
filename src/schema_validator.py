@@ -8,8 +8,8 @@ from src.models import ValidationIssue
 
 
 MANAGED_DESTINATION_COLUMNS = {
-    "created_date",
-    "modified_date",
+    "sp_ingest_created_utc",
+    "sp_ingest_modified_utc",
 }
 
 
@@ -89,7 +89,11 @@ def validate_source_against_destination(
     issues: list[ValidationIssue] = []
 
     source_columns = list(source_df.columns)
-    source_map = {_normalize(c): c for c in source_columns}
+    source_map = {
+        _normalize(c): c
+        for c in source_columns
+        if _normalize(c) not in MANAGED_DESTINATION_COLUMNS
+    }
 
     dest_map: dict[str, dict] = {}
     dest_order: list[str] = []

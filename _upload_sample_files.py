@@ -44,7 +44,8 @@ def upload_file(sp: SharePointClient, local_path: Path, folder_server_relative_u
         data = fh.read()
 
     print(f"  Uploading {local_path.name} ({len(data):,} bytes) -> {folder_server_relative_url}/", flush=True)
-    resp = _requests.put(upload_url, headers=headers, data=data, timeout=120)
+    timeout_seconds = 1800 if len(data) >= 50 * 1024 * 1024 else 120
+    resp = _requests.put(upload_url, headers=headers, data=data, timeout=timeout_seconds)
     resp.raise_for_status()
     print(f"  OK {local_path.name} uploaded (HTTP {resp.status_code})", flush=True)
 

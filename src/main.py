@@ -19,6 +19,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--process-id", default=None, help="Optional process_id filter")
     parser.add_argument("--workflow-id", default=None, help="Optional workflow_id filter")
     parser.add_argument(
+        "--ingestion-scope",
+        default="real",
+        choices=["real", "test", "validation", "perf_test", "all"],
+        help="Filter ingestion configs by scope (default: real)",
+    )
+    parser.add_argument(
         "--include-inactive",
         action="store_true",
         help="Include inactive configs (is_active=0) in run",
@@ -126,6 +132,7 @@ def run(argv: Optional[list[str]] = None) -> int:
             planned = sql_client.fetch_ingestion_configs(
                 process_id=args.process_id,
                 workflow_id=args.workflow_id,
+                ingestion_scope=args.ingestion_scope,
                 active_only=not args.include_inactive,
             )
             logger.info("Dry run successful. Selected %s config(s).", len(planned))
@@ -134,6 +141,7 @@ def run(argv: Optional[list[str]] = None) -> int:
         summary = engine.run(
             process_id=args.process_id,
             workflow_id=args.workflow_id,
+            ingestion_scope=args.ingestion_scope,
             include_inactive=args.include_inactive,
         )
 

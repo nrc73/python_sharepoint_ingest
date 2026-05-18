@@ -13,31 +13,59 @@ class EmailNotifier:
     def __init__(self, settings: EmailSettings):
         self._settings = settings
 
+    @staticmethod
+    def _normalize_recipients(recipients: Optional[str | Iterable[str]]) -> list[str]:
+        if recipients is None:
+            return []
+
+        if isinstance(recipients, str):
+            raw_items = [recipients]
+        else:
+            raw_items = list(recipients)
+
+        resolved: list[str] = []
+        for item in raw_items:
+            if item is None:
+                continue
+            for part in str(item).replace(";", ",").split(","):
+                value = part.strip()
+                if value:
+                    resolved.append(value)
+        return resolved
+
     def send(
         self,
-        to_address: Optional[str],
+        to_address: Optional[str | Iterable[str]],
         subject: str,
         body: str,
+        cc_addresses: Optional[str | Iterable[str]] = None,
     ) -> bool:
+        to_recipients = self._normalize_recipients(to_address)
+        cc_recipients = self._normalize_recipients(cc_addresses)
+
         if not self._settings.enabled:
             return False
-        if not to_address:
+        if not to_recipients:
             return False
         if not self._settings.host:
             return False
 
         msg = MIMEMultipart()
         msg["From"] = self._settings.from_address
-        msg["To"] = to_address
+        msg["To"] = ", ".join(to_recipients)
+        if cc_recipients:
+            msg["Cc"] = ", ".join(cc_recipients)
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "plain"))
+
+        all_recipients = [*to_recipients, *cc_recipients]
 
         with smtplib.SMTP(self._settings.host, self._settings.port) as smtp:
             if self._settings.use_tls:
                 smtp.starttls()
             if self._settings.username and self._settings.password:
                 smtp.login(self._settings.username, self._settings.password)
-            smtp.send_message(msg)
+            smtp.send_message(msg, to_addrs=all_recipients)
         return True
 
 

@@ -9,7 +9,7 @@ import subprocess
 import sys
 import urllib.parse
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.config import load_settings
 from src.keyvault_client import maybe_build_provider
+from src.notifications import EmailNotifier
 
 
 SUPPORTED_ENVIRONMENTS = ("dev", "prod")
@@ -45,6 +46,13 @@ class CredentialCheckResult:
     end_date: Optional[datetime]
     days_remaining: Optional[int]
     status: str
+
+
+@dataclass
+class EnvCheckSummary:
+    env_name: str
+    status: str
+    lines: list[str]
 
 
 def _resolve_target_envs(env_arg: str) -> list[str]:
@@ -205,10 +213,72 @@ def _validate_thresholds(warn_days: int, high_warn_days: int, critical_days: int
         raise ValueError("Invalid thresholds. Expected warn_days >= high_warn_days >= critical_days")
 
 
-def _run_for_env(env_name: str, args: argparse.Namespace) -> str:
+def _parse_email_list(raw_value: Optional[str]) -> list[str]:
+    if not raw_value:
+        return []
+    items: list[str] = []
+    for part in raw_value.replace(";", ",").split(","):
+        value = part.strip()
+        if value:
+            items.append(value)
+    return items
+
+
+def _build_notification_subject(scope_env: str, highest_status: str) -> str:
+    return f"[sharepoint-ingest][{scope_env}] Credential expiry health check: {highest_status}"
+
+
+def _build_notification_body(
+    *,
+    run_scope: str,
+    highest_status: str,
+    summaries: list[EnvCheckSummary],
+    now_utc: datetime,
+) -> str:
+    lines = [
+        f"Credential expiry health check result: {highest_status}",
+        f"Environment scope: {run_scope}",
+        f"UTC timestamp: {now_utc.isoformat()}",
+        "",
+        "Summary:",
+    ]
+
+    for summary in summaries:
+        lines.append(f"- {summary.env_name}: {summary.status}")
+
+    lines.append("")
+    lines.append("Details:")
+    for summary in summaries:
+        lines.append(f"[{summary.env_name}] overall_status={summary.status}")
+        for detail in summary.lines:
+            lines.append(f"  - {detail}")
+        lines.append("")
+
+    lines.extend(
+        [
+            "Recommended action:",
+            "- Rotate expiring app registration secrets before expiry.",
+            "- Align Key Vault secret values/metadata after rotation.",
+            "- Re-run this health check to confirm status is PASS.",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
+def _run_for_env(env_name: str, args: argparse.Namespace) -> EnvCheckSummary:
     now_utc = datetime.now(timezone.utc)
     settings = load_settings(env_override=env_name)
     provider = maybe_build_provider(settings.key_vault)
+    detail_lines: list[str] = []
+    simulate_expiry_days: Optional[int] = args.simulate_expiry_days
+
+    if simulate_expiry_days is not None:
+        simulated_expiry = now_utc + timedelta(days=simulate_expiry_days)
+        detail_lines.append(
+            f"SIMULATED expiry mode enabled: days_remaining={simulate_expiry_days}, "
+            f"effective_expiry={simulated_expiry.isoformat()}"
+        )
 
     if provider is not None:
         client_id, client_secret, tenant_id = provider.get_sharepoint_credentials(env_name)
@@ -236,9 +306,11 @@ def _run_for_env(env_name: str, args: argparse.Namespace) -> str:
             scope=sharepoint_scope,
         )
         print(f"[{env_name}] token_check: PASS (client secret can acquire SharePoint token)")
+        detail_lines.append("token_check: PASS")
     except Exception as exc:
         status = _max_status(status, "FAIL")
         print(f"[{env_name}] token_check: FAIL ({exc})")
+        detail_lines.append(f"token_check: FAIL ({exc})")
 
     service_principal = _get_service_principal(client_id)
     application = _get_application(client_id)
@@ -248,6 +320,8 @@ def _run_for_env(env_name: str, args: argparse.Namespace) -> str:
 
     print(f"[{env_name}] service_principal: {sp_display_name}")
     print(f"[{env_name}] sp_account_enabled: {sp_enabled}")
+    detail_lines.append(f"service_principal: {sp_display_name}")
+    detail_lines.append(f"sp_account_enabled: {sp_enabled}")
 
     if not sp_enabled:
         status = _max_status(status, "FAIL")
@@ -282,15 +356,32 @@ def _run_for_env(env_name: str, args: argparse.Namespace) -> str:
             f"[{env_name}] credential_expiry: WARN (no credentials returned from Entra; "
             "verify app uses client secret/cert auth and app registration is accessible)"
         )
+        detail_lines.append("credential_expiry: WARN (no credentials returned from Entra)")
     else:
         print(f"[{env_name}] credential_expiry: {len(credential_results)} credential(s) found")
+        detail_lines.append(f"credential_expiry: {len(credential_results)} credential(s) found")
         for item in credential_results:
+            if simulate_expiry_days is not None:
+                item.end_date = now_utc + timedelta(days=simulate_expiry_days)
+                item.days_remaining = simulate_expiry_days
+                item.status = _status_for_days(
+                    simulate_expiry_days,
+                    args.warn_days,
+                    args.high_warn_days,
+                    args.critical_days,
+                )
+
             status = _max_status(status, item.status)
             end_date_display = item.end_date.isoformat() if item.end_date else "unknown"
             days_display = str(item.days_remaining) if item.days_remaining is not None else "unknown"
             key_id_display = item.key_id[:8] + "..." if item.key_id else "(none)"
+            simulated_prefix = "SIMULATED " if simulate_expiry_days is not None else ""
             print(
-                f"[{env_name}] - {item.kind} key_id={key_id_display} display={item.display_name} "
+                f"[{env_name}] - {simulated_prefix}{item.kind} key_id={key_id_display} display={item.display_name} "
+                f"expires={end_date_display} days_remaining={days_display} status={item.status}"
+            )
+            detail_lines.append(
+                f"{simulated_prefix}{item.kind} key_id={key_id_display} display={item.display_name} "
                 f"expires={end_date_display} days_remaining={days_display} status={item.status}"
             )
 
@@ -300,21 +391,33 @@ def _run_for_env(env_name: str, args: argparse.Namespace) -> str:
             secret_name=settings.key_vault.client_secret_secret_name,
         )
         if kv_expiry is not None:
-            kv_days = _days_remaining(kv_expiry.astimezone(timezone.utc), now_utc)
+            kv_effective_expiry = kv_expiry.astimezone(timezone.utc)
+            kv_days = _days_remaining(kv_effective_expiry, now_utc)
+
+            if simulate_expiry_days is not None:
+                kv_effective_expiry = now_utc + timedelta(days=simulate_expiry_days)
+                kv_days = simulate_expiry_days
+
             kv_status = _status_for_days(kv_days, args.warn_days, args.high_warn_days, args.critical_days)
             status = _max_status(status, kv_status)
+            simulated_prefix = "SIMULATED " if simulate_expiry_days is not None else ""
             print(
-                f"[{env_name}] keyvault_secret_expiry: {kv_expiry.isoformat()} "
+                f"[{env_name}] keyvault_secret_expiry: {simulated_prefix}{kv_effective_expiry.isoformat()} "
                 f"(days_remaining={kv_days}, status={kv_status})"
+            )
+            detail_lines.append(
+                f"keyvault_secret_expiry={simulated_prefix}{kv_effective_expiry.isoformat()} days_remaining={kv_days} status={kv_status}"
             )
         else:
             print(f"[{env_name}] keyvault_secret_expiry: not set")
+            detail_lines.append("keyvault_secret_expiry: not set")
     except Exception as exc:
         status = _max_status(status, "WARN")
         print(f"[{env_name}] keyvault_secret_expiry: WARN (unable to read expiry metadata: {exc})")
+        detail_lines.append(f"keyvault_secret_expiry: WARN (unable to read expiry metadata: {exc})")
 
     print(f"[{env_name}] overall_status: {status}")
-    return status
+    return EnvCheckSummary(env_name=env_name, status=status, lines=detail_lines)
 
 
 def main() -> int:
@@ -336,25 +439,79 @@ def main() -> int:
         action="store_true",
         help="Also evaluate keyCredentials (certificate credentials), not only passwordCredentials",
     )
+    parser.add_argument(
+        "--notify-email-to",
+        required=False,
+        help="Primary email recipient(s), comma/semicolon-separated",
+    )
+    parser.add_argument(
+        "--notify-email-cc",
+        required=False,
+        help="CC email recipient(s), comma/semicolon-separated",
+    )
+    parser.add_argument(
+        "--notify-on",
+        default="warn",
+        choices=["warn", "high_warn", "critical", "fail"],
+        help="Send consolidated email when highest status reaches this level or worse (default: warn)",
+    )
+    parser.add_argument(
+        "--simulate-expiry-days",
+        type=int,
+        required=False,
+        help="Test-only: simulate credential/keyvault expiry as N days remaining without changing Azure values",
+    )
     args = parser.parse_args()
 
     _validate_thresholds(args.warn_days, args.high_warn_days, args.critical_days)
 
     target_envs = _resolve_target_envs(args.env)
     fail_threshold = _severity_for(args.fail_on.upper())
+    notify_threshold = _severity_for(args.notify_on.upper())
     highest_seen = "PASS"
     failed_envs: list[str] = []
+    summaries: list[EnvCheckSummary] = []
 
     for env_name in target_envs:
         try:
-            env_status = _run_for_env(env_name, args)
-            highest_seen = _max_status(highest_seen, env_status)
-            if _severity_for(env_status) >= fail_threshold:
+            summary = _run_for_env(env_name, args)
+            summaries.append(summary)
+            highest_seen = _max_status(highest_seen, summary.status)
+            if _severity_for(summary.status) >= fail_threshold:
                 failed_envs.append(env_name)
         except Exception as exc:
             failed_envs.append(env_name)
             highest_seen = _max_status(highest_seen, "FAIL")
+            summaries.append(
+                EnvCheckSummary(
+                    env_name=env_name,
+                    status="FAIL",
+                    lines=[f"execution_error: {exc}"],
+                )
+            )
             print(f"[{env_name}] FAILED: {exc}")
+
+    notify_to = _parse_email_list(args.notify_email_to)
+    notify_cc = _parse_email_list(args.notify_email_cc)
+    if notify_to and _severity_for(highest_seen) >= notify_threshold:
+        settings = load_settings(env_override=target_envs[0])
+        notifier = EmailNotifier(settings.email)
+        subject = _build_notification_subject(args.env.lower().strip(), highest_seen)
+        body = _build_notification_body(
+            run_scope=args.env.lower().strip(),
+            highest_status=highest_seen,
+            summaries=summaries,
+            now_utc=datetime.now(timezone.utc),
+        )
+        sent = notifier.send(notify_to, subject, body, cc_addresses=notify_cc)
+        if sent:
+            print(
+                f"[notify] consolidated email sent (to={', '.join(notify_to)}"
+                + (f", cc={', '.join(notify_cc)}" if notify_cc else "")
+                + f", threshold={args.notify_on}, highest={highest_seen})"
+            )
+        else:
+            print("[notify] WARN: email notification not sent (email disabled or SMTP not configured)")
 
     if failed_envs:
         print(

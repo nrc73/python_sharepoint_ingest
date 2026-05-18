@@ -29,6 +29,9 @@ class IngestionConfig:
     workflow_id: Optional[str]
     staging_table_name: str
     is_active: Any = "1"
+    ingestion_scope: str = "REAL"
+    ingestion_domain: Optional[str] = None
+    is_test_data: Any = 0
     file_name_pattern: Optional[str] = None
     load_strategy: Optional[str] = None
     merge_key_columns: Optional[str] = None
@@ -45,6 +48,10 @@ class IngestionConfig:
     @property
     def active(self) -> bool:
         return _flag_enabled(self.is_active)
+
+    @property
+    def test_data_enabled(self) -> bool:
+        return _flag_enabled(self.is_test_data)
 
 
 @dataclass

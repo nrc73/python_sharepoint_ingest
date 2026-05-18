@@ -25,10 +25,24 @@ BEGIN
         source_system VARCHAR(50) NULL,
         excel_tab_name VARCHAR(100) NOT NULL,
         source_file_name VARCHAR(255) NULL,
-        created_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        modified_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_dest_customers PRIMARY KEY (customer_id, excel_tab_name)
     );
+END
+GO
+
+IF COL_LENGTH('dbo.dest_customers', 'sp_ingest_created_utc') IS NULL
+    AND COL_LENGTH('dbo.dest_customers', 'created_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'dbo.dest_customers.created_date', 'sp_ingest_created_utc', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('dbo.dest_customers', 'sp_ingest_modified_utc') IS NULL
+    AND COL_LENGTH('dbo.dest_customers', 'modified_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'dbo.dest_customers.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
 END
 GO
 
@@ -54,10 +68,24 @@ BEGIN
         currency VARCHAR(10) NULL,
         status VARCHAR(20) NULL,
         source_file_name VARCHAR(255) NULL,
-        created_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        modified_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_dest_transactions PRIMARY KEY (transaction_id)
     );
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions', 'sp_ingest_created_utc') IS NULL
+    AND COL_LENGTH('dbo.dest_transactions', 'created_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'dbo.dest_transactions.created_date', 'sp_ingest_created_utc', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions', 'sp_ingest_modified_utc') IS NULL
+    AND COL_LENGTH('dbo.dest_transactions', 'modified_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'dbo.dest_transactions.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
 END
 GO
 
@@ -91,10 +119,31 @@ BEGIN
         ledger_code VARCHAR(20) NULL,
         comment_text VARCHAR(500) NULL,
         source_file_name VARCHAR(255) NULL,
-        created_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        modified_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_dest_transactions_large PRIMARY KEY (transaction_id)
     );
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'sp_ingest_created_utc') IS NULL
+    AND COL_LENGTH('dbo.dest_transactions_large', 'created_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'dbo.dest_transactions_large.created_date', 'sp_ingest_created_utc', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_large', 'sp_ingest_modified_utc') IS NULL
+    AND COL_LENGTH('dbo.dest_transactions_large', 'modified_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'dbo.dest_transactions_large.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('config.sharepoint_ingestion', 'sp_ingest_modified_utc') IS NULL
+    AND COL_LENGTH('config.sharepoint_ingestion', 'modified_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'config.sharepoint_ingestion.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
 END
 GO
 
@@ -190,7 +239,7 @@ GO
 
 UPDATE config.sharepoint_ingestion
 SET is_active = '0',
-    modified_date = GETDATE()
+    sp_ingest_modified_utc = SYSUTCDATETIME()
 WHERE workflow_id IN ('wf-valid-customers-au', 'wf-valid-customers-us');
 GO
 
@@ -212,11 +261,14 @@ WHEN MATCHED THEN
         process_id = COALESCE(target.process_id, NEWID()),
         staging_table_name = 'dbo.dest_customers',
         is_active = '1',
+        ingestion_scope = 'TEST',
+        ingestion_domain = 'sample_artifacts',
+        is_test_data = 1,
         file_name_pattern = 'valid_customers_*.xlsx',
         load_strategy = 'APPEND',
         merge_key_columns = 'customer_id,excel_tab_name',
         column_mapping_json = '{"CustomerId":"customer_id","CustomerName":"customer_name","SignupDate":"signup_date","CreditLimit":"credit_limit","IsActive":"is_active","RegionCode":"region_code","SourceSystem":"source_system"}',
-        modified_date = GETDATE()
+        sp_ingest_modified_utc = SYSUTCDATETIME()
 WHEN NOT MATCHED THEN
     INSERT (
         sharepoint_base_url,
@@ -233,6 +285,9 @@ WHEN NOT MATCHED THEN
         workflow_id,
         staging_table_name,
         is_active,
+        ingestion_scope,
+        ingestion_domain,
+        is_test_data,
         file_name_pattern,
         load_strategy,
         merge_key_columns,
@@ -253,6 +308,9 @@ WHEN NOT MATCHED THEN
         'wf-valid-customers',
         'dbo.dest_customers',
         '1',
+        'TEST',
+        'sample_artifacts',
+        1,
         'valid_customers_*.xlsx',
         'APPEND',
         'customer_id,excel_tab_name',
@@ -278,11 +336,14 @@ WHEN MATCHED THEN
         process_id = COALESCE(target.process_id, NEWID()),
         staging_table_name = 'dbo.dest_transactions',
         is_active = '1',
+        ingestion_scope = 'TEST',
+        ingestion_domain = 'sample_artifacts',
+        is_test_data = 1,
         file_name_pattern = 'valid_transactions_00[12].csv',
         load_strategy = 'APPEND',
         merge_key_columns = 'transaction_id',
         column_mapping_json = '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status"}',
-        modified_date = GETDATE()
+        sp_ingest_modified_utc = SYSUTCDATETIME()
 WHEN NOT MATCHED THEN
     INSERT (
         sharepoint_base_url,
@@ -299,6 +360,9 @@ WHEN NOT MATCHED THEN
         workflow_id,
         staging_table_name,
         is_active,
+        ingestion_scope,
+        ingestion_domain,
+        is_test_data,
         file_name_pattern,
         load_strategy,
         merge_key_columns,
@@ -319,6 +383,9 @@ WHEN NOT MATCHED THEN
         'wf-valid-transactions-standard',
         'dbo.dest_transactions',
         '1',
+        'TEST',
+        'sample_artifacts',
+        1,
         'valid_transactions_00[12].csv',
         'APPEND',
         'transaction_id',
@@ -344,11 +411,14 @@ WHEN MATCHED THEN
         process_id = COALESCE(target.process_id, NEWID()),
         staging_table_name = 'dbo.dest_transactions_large',
         is_active = '1',
+        ingestion_scope = 'TEST',
+        ingestion_domain = 'sample_artifacts',
+        is_test_data = 1,
         file_name_pattern = 'valid_transactions_large.csv',
         load_strategy = 'TRUNCATE',
         merge_key_columns = 'transaction_id',
         column_mapping_json = '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status","Quantity":"quantity","DiscountRate":"discount_rate","FeeAmount":"fee_amount","TaxAmount":"tax_amount","NetAmount":"net_amount","Channel":"channel","Region":"region","SourceSystem":"source_system","BatchId":"batch_id","EventTimestamp":"event_timestamp","IsPriority":"is_priority","ReferenceCode":"reference_code","LedgerCode":"ledger_code","CommentText":"comment_text"}',
-        modified_date = GETDATE()
+        sp_ingest_modified_utc = SYSUTCDATETIME()
 WHEN NOT MATCHED THEN
     INSERT (
         sharepoint_base_url,
@@ -365,6 +435,9 @@ WHEN NOT MATCHED THEN
         workflow_id,
         staging_table_name,
         is_active,
+        ingestion_scope,
+        ingestion_domain,
+        is_test_data,
         file_name_pattern,
         load_strategy,
         merge_key_columns,
@@ -385,6 +458,9 @@ WHEN NOT MATCHED THEN
         'wf-valid-transactions-large',
         'dbo.dest_transactions_large',
         '1',
+        'TEST',
+        'sample_artifacts',
+        1,
         'valid_transactions_large.csv',
         'TRUNCATE',
         'transaction_id',

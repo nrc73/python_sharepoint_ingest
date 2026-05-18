@@ -28,7 +28,7 @@ from src.file_processors import (
 )
 from src.models import IngestionConfig, IngestionSummary, ValidationIssue
 from src.notifications import EmailNotifier, build_failure_email_body, build_pk_violation_email_body, build_validation_email_body
-from src.schema_validator import validate_source_against_destination
+from src.schema_validator import MANAGED_DESTINATION_COLUMNS, validate_source_against_destination
 from src.sharepoint_client import SharePointClient
 from src.sql_client import SqlClient
 
@@ -251,11 +251,13 @@ class IngestionEngine:
         self,
         process_id: Optional[str] = None,
         workflow_id: Optional[str] = None,
+        ingestion_scope: Optional[str] = "real",
         include_inactive: bool = False,
     ) -> IngestionSummary:
         configs = self.sql_client.fetch_ingestion_configs(
             process_id=process_id,
             workflow_id=workflow_id,
+            ingestion_scope=ingestion_scope,
             active_only=not include_inactive,
         )
 
@@ -333,6 +335,9 @@ class IngestionEngine:
                     validation_error_count=self._last_file_validation_error_count,
                     memory_peak_mb=self._capture_memory_peak_mb(),
                     duration_seconds=round(time.perf_counter() - started, 2),
+                    ingestion_scope=config.ingestion_scope,
+                    ingestion_domain=config.ingestion_domain,
+                    is_test_data=config.test_data_enabled,
                 )
             except Exception as exc:  # pragma: no cover - integration path
                 err = f"Config {config.id} failed for file {item.name}: {exc}"
@@ -352,6 +357,9 @@ class IngestionEngine:
                     validation_error_count=self._last_file_validation_error_count,
                     memory_peak_mb=self._capture_memory_peak_mb(),
                     duration_seconds=round(time.perf_counter() - started, 2),
+                    ingestion_scope=config.ingestion_scope,
+                    ingestion_domain=config.ingestion_domain,
+                    is_test_data=config.test_data_enabled,
                 )
 
                 if failed_folder:
@@ -775,9 +783,12 @@ class IngestionEngine:
     def _destination_datetime_columns(cls, destination_columns: list[dict]) -> set[str]:
         result: set[str] = set()
         for col in destination_columns:
+            column_name = str(col.get("column_name") or "").strip().lower()
+            if column_name in MANAGED_DESTINATION_COLUMNS:
+                continue
             data_type = str(col.get("data_type") or "").strip().lower()
             if data_type in cls._DATE_TYPE_NAMES:
-                result.add(str(col.get("column_name") or "").strip().lower())
+                result.add(column_name)
         return result
 
     def _convert_series_to_datetime(self, series: pd.Series, source_kind: str, column_name: str) -> pd.Series:

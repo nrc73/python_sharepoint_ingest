@@ -94,6 +94,7 @@ class SqlClient:
         self,
         process_id: Optional[str] = None,
         workflow_id: Optional[str] = None,
+        ingestion_scope: Optional[str] = "real",
         active_only: bool = True,
     ) -> list[IngestionConfig]:
         query = "SELECT * FROM config.sharepoint_ingestion WHERE 1=1"
@@ -113,9 +114,19 @@ class SqlClient:
         query += " ORDER BY id"
         rows = self.query_rows(query, params)
 
+        normalized_scope = (ingestion_scope or "all").strip().upper()
         configs: list[IngestionConfig] = []
         for row in rows:
-            configs.append(self._to_config(row))
+            config = self._to_config(row)
+
+            if normalized_scope != "ALL":
+                config_scope = (config.ingestion_scope or "").strip().upper()
+                if not config_scope:
+                    config_scope = "TEST" if config.test_data_enabled else "REAL"
+                if config_scope != normalized_scope:
+                    continue
+
+            configs.append(config)
         return configs
 
     @staticmethod
@@ -140,6 +151,9 @@ class SqlClient:
             workflow_id=row.get("workflow_id"),
             staging_table_name=str(row.get("staging_table_name") or ""),
             is_active=row.get("is_active", "1"),
+            ingestion_scope=str(row.get("ingestion_scope") or "REAL"),
+            ingestion_domain=row.get("ingestion_domain"),
+            is_test_data=row.get("is_test_data", 0),
             file_name_pattern=row.get("file_name_pattern"),
             load_strategy=row.get("load_strategy"),
             merge_key_columns=row.get("merge_key_columns"),
@@ -195,11 +209,54 @@ class SqlClient:
         validation_error_count: Optional[int] = None,
         memory_peak_mb: Optional[float] = None,
         duration_seconds: Optional[float] = None,
+        ingestion_scope: Optional[str] = None,
+        ingestion_domain: Optional[str] = None,
+        is_test_data: Optional[bool] = None,
     ) -> None:
         sql_text = """
         IF OBJECT_ID('log.sharepoint_ingestion_audit', 'U') IS NOT NULL
         BEGIN
             IF COL_LENGTH('log.sharepoint_ingestion_audit', 'batch_id') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_scope') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_domain') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'is_test_data') IS NOT NULL
+            BEGIN
+                INSERT INTO log.sharepoint_ingestion_audit (
+                    config_id,
+                    workflow_id,
+                    process_id,
+                    file_name,
+                    status,
+                    records_loaded,
+                    batch_id,
+                    rows_scanned,
+                    validation_error_count,
+                    memory_peak_mb,
+                    duration_seconds,
+                    ingestion_scope,
+                    ingestion_domain,
+                    is_test_data,
+                    message
+                )
+                VALUES (
+                    :config_id,
+                    :workflow_id,
+                    TRY_CONVERT(uniqueidentifier, :process_id),
+                    :file_name,
+                    :status,
+                    :records_loaded,
+                    TRY_CONVERT(uniqueidentifier, :batch_id),
+                    :rows_scanned,
+                    :validation_error_count,
+                    :memory_peak_mb,
+                    :duration_seconds,
+                    :ingestion_scope,
+                    :ingestion_domain,
+                    :is_test_data,
+                    :message
+                );
+            END
+            ELSE IF COL_LENGTH('log.sharepoint_ingestion_audit', 'batch_id') IS NOT NULL
             BEGIN
                 INSERT INTO log.sharepoint_ingestion_audit (
                     config_id,
@@ -268,6 +325,9 @@ class SqlClient:
                 "validation_error_count": validation_error_count,
                 "memory_peak_mb": memory_peak_mb,
                 "duration_seconds": duration_seconds,
+                "ingestion_scope": ingestion_scope,
+                "ingestion_domain": ingestion_domain,
+                "is_test_data": 1 if is_test_data else 0 if is_test_data is not None else None,
             },
         )
 

@@ -202,7 +202,13 @@ Retrospective compatibility fields remain in scope (`process_id`, `workflow_id`)
 After standalone validation is complete, the Python runner can be executed from SSIS (Execute Process Task), for example:
 
 ```text
-python -m src.main --env prod --process-id <GUID>
+python -m src.main --env prod --ingestion-scope real --process-id <GUID>
+```
+
+To run sample/test artifact ingestions explicitly:
+
+```text
+python -m src.main --env dev --ingestion-scope test
 ```
 
 Planned validation includes standalone Python runs first, then SSIS package integration tests (for example via Visual Studio Community + SSDT and SQL tooling).

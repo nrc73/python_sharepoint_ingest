@@ -49,6 +49,12 @@ class DummySqlClient:
     def get_primary_key_columns(self, table_name: str):
         return ["id"]
 
+    def fetch_ingestion_configs(self, process_id=None, workflow_id=None, ingestion_scope=None, active_only=True):
+        return []
+
+    def insert_audit_record(self, **kwargs):
+        return None
+
 
 def _settings(chunked: bool = True, chunk_size: int = 2):
     return SimpleNamespace(
@@ -92,6 +98,9 @@ def _config(load_strategy: str = "TRUNCATE") -> IngestionConfig:
         process_id=None,
         workflow_id=None,
         staging_table_name="dbo.target",
+        ingestion_scope="REAL",
+        ingestion_domain=None,
+        is_test_data=0,
         load_strategy=load_strategy,
         merge_key_columns="id",
     )
@@ -202,6 +211,42 @@ def test_detect_excel_datetime_stored_as_text_ignores_true_datetime_values() -> 
     )
     destination_columns = [
         {"column_name": "signup_date", "data_type": "datetime"},
+        {"column_name": "customer_id", "data_type": "varchar"},
+    ]
+
+    issues = engine._detect_excel_datetime_text_issues(source, destination_columns)
+
+    assert issues == []
+
+
+def test_destination_datetime_columns_excludes_framework_managed_audit_fields() -> None:
+    engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+    destination_columns = [
+        {"column_name": "signup_date", "data_type": "datetime2"},
+        {"column_name": "sp_ingest_created_utc", "data_type": "datetime2"},
+        {"column_name": "sp_ingest_modified_utc", "data_type": "datetime2"},
+        {"column_name": "customer_id", "data_type": "varchar"},
+    ]
+
+    result = engine._destination_datetime_columns(destination_columns)
+
+    assert "signup_date" in result
+    assert "sp_ingest_created_utc" not in result
+    assert "sp_ingest_modified_utc" not in result
+
+
+def test_detect_excel_datetime_stored_as_text_ignores_framework_managed_audit_fields() -> None:
+    engine = IngestionEngine(_settings(chunked=False), DummySqlClient(), DummySharePointClient(b""), logging.getLogger("test"))
+    source = pd.DataFrame(
+        {
+            "sp_ingest_created_utc": ["01/01/2025", "31/01/2025"],
+            "sp_ingest_modified_utc": ["2025-02-01", "2025-02-02"],
+            "customer_id": ["C1", "C2"],
+        }
+    )
+    destination_columns = [
+        {"column_name": "sp_ingest_created_utc", "data_type": "datetime2"},
+        {"column_name": "sp_ingest_modified_utc", "data_type": "datetime2"},
         {"column_name": "customer_id", "data_type": "varchar"},
     ]
 

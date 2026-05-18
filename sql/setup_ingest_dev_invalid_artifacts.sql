@@ -30,8 +30,15 @@ BEGIN
         status VARCHAR(20) NOT NULL,
         records_loaded INT NULL,
         message VARCHAR(MAX) NULL,
-        created_date DATETIME NOT NULL DEFAULT GETDATE()
+        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
     );
+END
+GO
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'sp_ingest_created_utc') IS NULL
+    AND COL_LENGTH('log.sharepoint_ingestion_audit', 'created_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'log.sharepoint_ingestion_audit.created_date', 'sp_ingest_created_utc', 'COLUMN';
 END
 GO
 
@@ -75,10 +82,24 @@ BEGIN
         currency VARCHAR(10) NULL,
         status VARCHAR(20) NULL,
         source_file_name VARCHAR(255) NULL,
-        created_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        modified_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_dest_invalid_csv PRIMARY KEY (transaction_id)
     );
+END
+GO
+
+IF COL_LENGTH('dbo.dest_invalid_csv', 'sp_ingest_created_utc') IS NULL
+    AND COL_LENGTH('dbo.dest_invalid_csv', 'created_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'dbo.dest_invalid_csv.created_date', 'sp_ingest_created_utc', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('dbo.dest_invalid_csv', 'sp_ingest_modified_utc') IS NULL
+    AND COL_LENGTH('dbo.dest_invalid_csv', 'modified_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'dbo.dest_invalid_csv.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
 END
 GO
 
@@ -163,10 +184,24 @@ BEGIN
         source_system VARCHAR(50) NULL,
         excel_tab_name VARCHAR(100) NOT NULL,
         source_file_name VARCHAR(255) NULL,
-        created_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        modified_date DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_dest_invalid_excel PRIMARY KEY (customer_id, excel_tab_name)
     );
+END
+GO
+
+IF COL_LENGTH('dbo.dest_invalid_excel', 'sp_ingest_created_utc') IS NULL
+    AND COL_LENGTH('dbo.dest_invalid_excel', 'created_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'dbo.dest_invalid_excel.created_date', 'sp_ingest_created_utc', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('dbo.dest_invalid_excel', 'sp_ingest_modified_utc') IS NULL
+    AND COL_LENGTH('dbo.dest_invalid_excel', 'modified_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'dbo.dest_invalid_excel.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
 END
 GO
 
@@ -259,6 +294,13 @@ BEGIN
 END
 GO
 
+IF COL_LENGTH('config.sharepoint_ingestion', 'sp_ingest_modified_utc') IS NULL
+    AND COL_LENGTH('config.sharepoint_ingestion', 'modified_date') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'config.sharepoint_ingestion.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
+END
+GO
+
 MERGE config.sharepoint_ingestion AS target
 USING (SELECT 'wf-invalid-csv-all' AS workflow_id) AS source
 ON target.workflow_id = source.workflow_id
@@ -277,11 +319,14 @@ WHEN MATCHED THEN
         process_id = COALESCE(target.process_id, NEWID()),
         staging_table_name = 'dbo.dest_invalid_csv',
         is_active = '1',
+        ingestion_scope = 'TEST',
+        ingestion_domain = 'sample_artifacts',
+        is_test_data = 1,
         file_name_pattern = 'invalid_*.csv',
         load_strategy = 'APPEND',
         merge_key_columns = 'transaction_id',
         column_mapping_json = '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status"}',
-        modified_date = GETDATE()
+        sp_ingest_modified_utc = SYSUTCDATETIME()
 WHEN NOT MATCHED THEN
     INSERT (
         sharepoint_base_url,
@@ -298,6 +343,9 @@ WHEN NOT MATCHED THEN
         workflow_id,
         staging_table_name,
         is_active,
+        ingestion_scope,
+        ingestion_domain,
+        is_test_data,
         file_name_pattern,
         load_strategy,
         merge_key_columns,
@@ -318,6 +366,9 @@ WHEN NOT MATCHED THEN
         'wf-invalid-csv-all',
         'dbo.dest_invalid_csv',
         '1',
+        'TEST',
+        'sample_artifacts',
+        1,
         'invalid_*.csv',
         'APPEND',
         'transaction_id',
@@ -343,11 +394,14 @@ WHEN MATCHED THEN
         process_id = COALESCE(target.process_id, NEWID()),
         staging_table_name = 'dbo.dest_invalid_excel',
         is_active = '1',
+        ingestion_scope = 'TEST',
+        ingestion_domain = 'sample_artifacts',
+        is_test_data = 1,
         file_name_pattern = 'invalid_(additional_unknown_columns|customers_multiple_datasets|datetime_stress|date_as_text|numeric_overflow).xlsx',
         load_strategy = 'APPEND',
         merge_key_columns = 'customer_id,excel_tab_name',
         column_mapping_json = '{"CustomerId":"customer_id","CustomerName":"customer_name","SignupDate":"signup_date","CreditLimit":"credit_limit","IsActive":"is_active","RegionCode":"region_code","SourceSystem":"source_system"}',
-        modified_date = GETDATE()
+        sp_ingest_modified_utc = SYSUTCDATETIME()
 WHEN NOT MATCHED THEN
     INSERT (
         sharepoint_base_url,
@@ -364,6 +418,9 @@ WHEN NOT MATCHED THEN
         workflow_id,
         staging_table_name,
         is_active,
+        ingestion_scope,
+        ingestion_domain,
+        is_test_data,
         file_name_pattern,
         load_strategy,
         merge_key_columns,
@@ -384,6 +441,9 @@ WHEN NOT MATCHED THEN
         'wf-invalid-excel-all',
         'dbo.dest_invalid_excel',
         '1',
+        'TEST',
+        'sample_artifacts',
+        1,
         'invalid_(additional_unknown_columns|customers_multiple_datasets|datetime_stress|date_as_text|numeric_overflow).xlsx',
         'APPEND',
         'customer_id,excel_tab_name',
@@ -409,11 +469,14 @@ WHEN MATCHED THEN
         process_id = COALESCE(target.process_id, NEWID()),
         staging_table_name = 'dbo.dest_invalid_excel',
         is_active = '1',
+        ingestion_scope = 'TEST',
+        ingestion_domain = 'sample_artifacts',
+        is_test_data = 1,
         file_name_pattern = 'invalid_missing_tabs.xlsx',
         load_strategy = 'APPEND',
         merge_key_columns = 'customer_id,excel_tab_name',
         column_mapping_json = '{"CustomerId":"customer_id","CustomerName":"customer_name","SignupDate":"signup_date","CreditLimit":"credit_limit","IsActive":"is_active","RegionCode":"region_code","SourceSystem":"source_system"}',
-        modified_date = GETDATE()
+        sp_ingest_modified_utc = SYSUTCDATETIME()
 WHEN NOT MATCHED THEN
     INSERT (
         sharepoint_base_url,
@@ -430,6 +493,9 @@ WHEN NOT MATCHED THEN
         workflow_id,
         staging_table_name,
         is_active,
+        ingestion_scope,
+        ingestion_domain,
+        is_test_data,
         file_name_pattern,
         load_strategy,
         merge_key_columns,
@@ -450,6 +516,9 @@ WHEN NOT MATCHED THEN
         'wf-invalid-excel-missing-tabs',
         'dbo.dest_invalid_excel',
         '1',
+        'TEST',
+        'sample_artifacts',
+        1,
         'invalid_missing_tabs.xlsx',
         'APPEND',
         'customer_id,excel_tab_name',
