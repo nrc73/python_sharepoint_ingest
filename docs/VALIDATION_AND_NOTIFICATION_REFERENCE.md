@@ -66,7 +66,7 @@ It is intended as a single handoff artifact for external documentation and opera
 4. Invalid worksheet selection (`excel_tab_name` / regex matching no sheet)
 5. Wrong destination table name / metadata lookup failures
 6. Incomplete credentials (SharePoint or SQL)
-7. Missing/incorrect `merge_key_columns` for merge/upsert intent
+7. Missing/incorrect `merge_key_columns` for APPEND duplicate-detection intent
 
 ### Notification behavior
 
@@ -97,7 +97,6 @@ It is intended as a single handoff artifact for external documentation and opera
 - PK-specific subject/body via `build_pk_violation_email_body`.
 - Includes table, key columns, duplicate count/sample values (when available), and remediation options:
   - FULL RELOAD
-  - UPSERT
   - MANUAL CLEAN
 
 ---

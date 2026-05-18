@@ -49,11 +49,12 @@ vectorises into a single server-side batch per chunk.
 > Enable `ENABLE_CHUNKED_CSV=true` to reduce peak RSS from ~720 MB to ~150 MB
 > regardless of file size, at a small throughput cost.
 
-### Merge load (temp-table path)
+### Notes on dormant merge implementation
 
-`merge_load` (used when `load_strategy = MERGE`) still uses `method="multi"` for the
-staging temp-table because the temp-table is small and dropped immediately.  If merge
-workflows start handling large files, apply the same `method=None` change there.
+`SqlClient.merge_load` exists in the codebase but is not part of the active ingestion
+runtime path. Current ingestion strategy resolution allows `TRUNCATE` and `APPEND`.
+If `MERGE` is reintroduced in future, re-evaluate bulk insert settings for that path
+before enabling it in production workflows.
 
 ---
 
@@ -172,12 +173,11 @@ When a PK violation is caught, a purpose-built notification email is sent that i
 - Configured key column(s)
 - Duplicate row count and up to 5 sample key values (from the intra-file check)
 - Resource telemetry (rows scanned, peak memory, elapsed time)
-- Three remediation options:
+- Two remediation options:
 
   | Option | When to use |
   |---|---|
   | **FULL RELOAD** | Switch config to `TRUNCATE` strategy, re-upload the corrected file and rerun. |
-  | **UPSERT** | Switch config to `MERGE` strategy so duplicate keys are updated rather than inserted. |
   | **MANUAL CLEAN** | Delete the duplicate rows from the destination table and re-upload only the delta. |
 
 ### Reload workflow for APPEND configs
@@ -190,11 +190,7 @@ When a PK violation is caught, a purpose-built notification email is sent that i
       - Re-upload the corrected file to the SharePoint process folder.
       - Rerun the workflow.
       - Reset load_strategy = APPEND after the successful run.
-   b) UPSERT:
-      - Set load_strategy = MERGE and configure merge_key_columns.
-      - Re-upload the corrected file.
-      - Rerun.
-   c) MANUAL CLEAN:
+   b) MANUAL CLEAN:
       - Run a DELETE against the destination table for the affected key values.
       - Re-upload only the new/corrected rows.
       - Rerun with load_strategy = APPEND unchanged.
@@ -203,8 +199,8 @@ When a PK violation is caught, a purpose-built notification email is sent that i
 
 ### Key column configuration
 
-`merge_key_columns` (comma-separated) is used by both the intra-file duplicate check and
-the `MERGE` load strategy.  If left blank, the engine falls back to:
+`merge_key_columns` (comma-separated) defines the key columns used for APPEND duplicate
+detection and PK-violation diagnostics. If left blank, the engine falls back to:
 
 1. Primary key columns discovered from `INFORMATION_SCHEMA.KEY_COLUMN_USAGE`
 2. The first destination column (last resort)

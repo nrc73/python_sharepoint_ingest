@@ -504,13 +504,12 @@ def test_notify_pk_violation_builds_dedicated_subject_and_remediation_body() -> 
     assert "dbo.target" in body
     assert "Remediation options" in body
     assert "FULL RELOAD" in body
-    assert "UPSERT" in body
     assert "MANUAL CLEAN" in body
 
 
 def test_pk_violation_email_body_contains_full_context() -> None:
     """build_pk_violation_email_body includes file name, table, key columns, duplicate count,
-    sample values, resource telemetry, and all three remediation options."""
+    sample values, resource telemetry, and remediation options."""
     from src.notifications import build_pk_violation_email_body
 
     body = build_pk_violation_email_body(
@@ -533,7 +532,6 @@ def test_pk_violation_email_body_contains_full_context() -> None:
     assert "6" in body
     assert "BK001" in body
     assert "FULL RELOAD" in body
-    assert "UPSERT" in body
     assert "MANUAL CLEAN" in body
     assert "100" in body
     assert "45.2 MB" in body

@@ -366,8 +366,8 @@ class SqlClient:
                 f"PRIMARY_KEY_VIOLATION: Appending rows to '{table_name}' failed due to a "
                 f"primary key or unique constraint violation. The file may have already been "
                 f"loaded (reload scenario) or contains duplicate key values within the file "
-                f"itself. Use load_strategy=TRUNCATE for a full reload or load_strategy=MERGE "
-                f"with merge_key_columns for an upsert. Original error: {exc}"
+                f"itself. Use load_strategy=TRUNCATE for a full reload, or remove conflicting "
+                f"rows before retrying APPEND. Original error: {exc}"
             ) from exc
 
     def merge_load(self, df: pd.DataFrame, table_name: str, merge_keys: list[str]) -> None:

@@ -179,11 +179,7 @@ def build_pk_violation_email_body(
         "config.sharepoint_ingestion. The table will be cleared before each load."
     )
     lines.append(
-        "  2. UPSERT        — change load_strategy to MERGE and set merge_key_columns to "
-        "the primary key column(s). Existing rows will be updated; new rows inserted."
-    )
-    lines.append(
-        "  3. MANUAL CLEAN  — delete the already-loaded rows from the target table and "
+        "  2. MANUAL CLEAN  — delete the already-loaded rows from the target table and "
         "restore the file to the SharePoint process folder to trigger a re-run."
     )
 

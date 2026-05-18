@@ -41,7 +41,6 @@ This repository is being delivered in phases. The current phase includes repeata
 |---|---|---|
 | `TRUNCATE` (default) | Destination table is truncated before each load. Safe to reload any number of times. | None |
 | `APPEND` | Rows are inserted without clearing the table. Re-processing the same file will cause a PK violation if the table has a unique/PK index. | **Yes — see below** |
-| `MERGE` | Uses a staging temp-table + SQL `MERGE` on `merge_key_columns`. Rows are upserted. | None (keys are updated) |
 
 ### APPEND reload — primary key protection
 
@@ -51,7 +50,7 @@ When `load_strategy = APPEND` is used, the engine applies a **two-layer defence*
 
 2. **SQL `IntegrityError` wrapper** — if the pre-flight check passes but the database still rejects the insert (because the same key already exists from a prior run), `append_load` catches the SQLAlchemy `IntegrityError` and re-raises it with the `PRIMARY_KEY_VIOLATION:` prefix.
 
-In both cases the failure is routed to a **dedicated notification email** that includes the table name, key columns, duplicate count, sample key values, and three remediation options (FULL RELOAD / UPSERT / MANUAL CLEAN).
+In both cases the failure is routed to a **dedicated notification email** that includes the table name, key columns, duplicate count, sample key values, and two remediation options (FULL RELOAD / MANUAL CLEAN).
 
 > See [`docs/PERFORMANCE_AND_RESOURCE_HANDLING.md`](docs/PERFORMANCE_AND_RESOURCE_HANDLING.md#append-reload--primary-key-violation-risks) for the full reload workflow and configuration guidance.
 
@@ -194,8 +193,8 @@ Including fields such as:
 - `multi_file_ingest`
 - `staging_table_name`
 - `file_type`
-- `load_strategy` (`TRUNCATE` / `APPEND` / `MERGE`)
-- `merge_key_columns` (comma-separated key columns for APPEND duplicate detection and MERGE upsert)
+- `load_strategy` (`TRUNCATE` / `APPEND`)
+- `merge_key_columns` (comma-separated key columns for APPEND duplicate detection and PK-violation diagnostics)
 - `ingest_type` (`append` / `replace`)
 - `add_columns` (`sheet_name` / `file_name`)
 
