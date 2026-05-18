@@ -68,7 +68,7 @@ If `wf-a` TRUNCATEs `dbo.dest_transactions` while `wf-b` is still inserting into
 `wf-b` will receive a lock wait or deadlock error.
 
 **Mitigation options:**
-- Schedule workflows with non-overlapping windows in Azure Logic Apps / Data Factory.
+- Schedule workflows with non-overlapping windows in SSIS / SQL Agent.
 - Use `load_strategy = APPEND` + a surrogate `batch_id` column so concurrent inserts
   never conflict.
 - Use a staging table per workflow and merge into the final table in a post-step.
