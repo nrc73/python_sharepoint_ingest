@@ -29,6 +29,9 @@ BEGIN
         file_name VARCHAR(255) NULL,
         status VARCHAR(20) NOT NULL,
         records_loaded INT NULL,
+        ingestion_scope VARCHAR(20) NULL,
+        ingestion_domain VARCHAR(50) NULL,
+        is_test_data BIT NULL,
         message VARCHAR(MAX) NULL,
         sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
     );
@@ -69,6 +72,24 @@ GO
 IF COL_LENGTH('log.sharepoint_ingestion_audit', 'duration_seconds') IS NULL
 BEGIN
     ALTER TABLE log.sharepoint_ingestion_audit ADD duration_seconds DECIMAL(18,2) NULL;
+END
+GO
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_scope') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD ingestion_scope VARCHAR(20) NULL;
+END
+GO
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_domain') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD ingestion_domain VARCHAR(50) NULL;
+END
+GO
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'is_test_data') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD is_test_data BIT NULL;
 END
 GO
 

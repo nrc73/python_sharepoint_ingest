@@ -59,6 +59,9 @@ BEGIN
         workflow_id VARCHAR(100),
         staging_table_name VARCHAR(200) NOT NULL,
         is_active varchar(1) DEFAULT 1,
+        ingestion_scope VARCHAR(20) NOT NULL CONSTRAINT DF_sharepoint_ingestion_scope DEFAULT 'REAL',
+        ingestion_domain VARCHAR(50) NULL,
+        is_test_data BIT NOT NULL CONSTRAINT DF_sharepoint_ingestion_is_test_data DEFAULT 0,
         file_name_pattern VARCHAR(255) NULL,
         load_strategy VARCHAR(30) NULL,
         merge_key_columns VARCHAR(400) NULL,
@@ -80,6 +83,21 @@ BEGIN
     EXEC sp_rename 'config.sharepoint_ingestion.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
 END;
 
+IF COL_LENGTH('config.sharepoint_ingestion', 'ingestion_scope') IS NULL
+BEGIN
+    ALTER TABLE config.sharepoint_ingestion ADD ingestion_scope VARCHAR(20) NOT NULL CONSTRAINT DF_sharepoint_ingestion_scope DEFAULT 'REAL';
+END;
+
+IF COL_LENGTH('config.sharepoint_ingestion', 'ingestion_domain') IS NULL
+BEGIN
+    ALTER TABLE config.sharepoint_ingestion ADD ingestion_domain VARCHAR(50) NULL;
+END;
+
+IF COL_LENGTH('config.sharepoint_ingestion', 'is_test_data') IS NULL
+BEGIN
+    ALTER TABLE config.sharepoint_ingestion ADD is_test_data BIT NOT NULL CONSTRAINT DF_sharepoint_ingestion_is_test_data DEFAULT 0;
+END;
+
 IF OBJECT_ID('log.sharepoint_ingestion_audit', 'U') IS NULL
 BEGIN
     CREATE TABLE log.sharepoint_ingestion_audit (
@@ -90,6 +108,14 @@ BEGIN
         file_name VARCHAR(255) NULL,
         status VARCHAR(20) NOT NULL,
         records_loaded INT NULL,
+        batch_id UNIQUEIDENTIFIER NULL,
+        rows_scanned INT NULL,
+        validation_error_count INT NULL,
+        memory_peak_mb DECIMAL(18,2) NULL,
+        duration_seconds DECIMAL(18,2) NULL,
+        ingestion_scope VARCHAR(20) NULL,
+        ingestion_domain VARCHAR(50) NULL,
+        is_test_data BIT NULL,
         message VARCHAR(MAX) NULL,
         sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
     );
@@ -99,6 +125,46 @@ IF COL_LENGTH('log.sharepoint_ingestion_audit', 'sp_ingest_created_utc') IS NULL
     AND COL_LENGTH('log.sharepoint_ingestion_audit', 'created_date') IS NOT NULL
 BEGIN
     EXEC sp_rename 'log.sharepoint_ingestion_audit.created_date', 'sp_ingest_created_utc', 'COLUMN';
+END;
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'batch_id') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD batch_id UNIQUEIDENTIFIER NULL;
+END;
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'rows_scanned') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD rows_scanned INT NULL;
+END;
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'validation_error_count') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD validation_error_count INT NULL;
+END;
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'memory_peak_mb') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD memory_peak_mb DECIMAL(18,2) NULL;
+END;
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'duration_seconds') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD duration_seconds DECIMAL(18,2) NULL;
+END;
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_scope') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD ingestion_scope VARCHAR(20) NULL;
+END;
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_domain') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD ingestion_domain VARCHAR(50) NULL;
+END;
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'is_test_data') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD is_test_data BIT NULL;
 END;
 
 IF OBJECT_ID('dbo.sample_ingestion_target', 'U') IS NULL
