@@ -1,3 +1,5 @@
+"""Central logging configuration for console and file handlers."""
+
 from __future__ import annotations
 
 import logging

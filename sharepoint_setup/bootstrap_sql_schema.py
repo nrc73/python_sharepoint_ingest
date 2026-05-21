@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.config import load_settings
-from src.logging_utils import configure_logging
-from src.sql_client import SqlClient
+from sharepoint_ingest.config import load_settings
+from sharepoint_ingest.logging_utils import configure_logging
+from sharepoint_ingest.sql_client import SqlClient
 
 
 def _split_sql_batches(script: str) -> list[str]:

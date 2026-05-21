@@ -277,7 +277,7 @@ before reprocessing this file.
 Use `_diag_sql_blockers.py` in the project root:
 
 ```bash
-python _diag_sql_blockers.py
+python tools/diagnostics/_diag_sql_blockers.py
 ```
 
 This script reports:

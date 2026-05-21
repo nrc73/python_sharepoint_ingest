@@ -1,6 +1,8 @@
 """Test user token vs app-only token against SharePoint REST, print all headers."""
 import requests, base64, json, sys
-sys.path.insert(0, ".")
+PROJECT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 TOKEN_FILE = r"E:\DockerTemp\sp_user_token.txt"
 

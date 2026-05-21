@@ -1,10 +1,11 @@
 param(
     [ValidateSet("dev", "prod", "all")]
     [string]$Env = "all",
-    [string]$SubscriptionId = "7eae80e8-b50b-41bb-94ec-a9ca920ae438",
-    [string]$TenantId = "0cf630b4-1fdb-4703-b8df-e709d33e3dde",
+    [string]$SubscriptionId = "",
+    [string]$TenantId = "",
     [string]$ResourceGroup = "resource_ingest",
-    [string]$VaultName = "keyvault-ingest",
+    [string]$DevVaultName = "kv-sp-ingest-dev",
+    [string]$ProdVaultName = "kv-sp-ingest-prod",
     [string]$DevSiteUrl = "https://mycompany715.sharepoint.com/sites/data_ingest_dev",
     [string]$ProdSiteUrl = "https://mycompany715.sharepoint.com/sites/data_ingestion_prod",
     [string]$DevSqlServer = "localhost:1433",
@@ -48,14 +49,29 @@ function Invoke-AzJson {
 
 function Normalize-Url([string]$u) { return (($u -replace '\p{Cf}', '').Trim()) }
 
-function Set-KvSecret([string]$Name, [string]$Value) {
+function Get-ValueFromSources([string]$Name) {
+    $v = [Environment]::GetEnvironmentVariable($Name)
+    if (-not [string]::IsNullOrWhiteSpace($v)) { return $v }
+    return $null
+}
+
+function Resolve-ParamOrEnv([string]$ProvidedValue, [string[]]$EnvVarNames, [string]$DefaultValue = "") {
+    if (-not [string]::IsNullOrWhiteSpace($ProvidedValue)) { return $ProvidedValue }
+    foreach ($n in $EnvVarNames) {
+        $resolved = Get-ValueFromSources -Name $n
+        if (-not [string]::IsNullOrWhiteSpace($resolved)) { return $resolved }
+    }
+    return $DefaultValue
+}
+
+function Set-KvSecret([string]$VaultName, [string]$Name, [string]$Value) {
     if ([string]::IsNullOrWhiteSpace($Value)) { throw "Secret value for '$Name' is empty." }
     $s = Invoke-AzRaw -Arguments @("keyvault", "secret", "set", "--vault-name", $VaultName, "--name", $Name, "--value", $Value)
     if ($s.ExitCode -ne 0) { throw "Failed setting secret '$Name': $($s.Output)" }
     Write-Host "[PASS] KeyVault secret set: $Name" -ForegroundColor Green
 }
 
-function Get-SecretIfExists([string]$Name) {
+function Get-SecretIfExists([string]$VaultName, [string]$Name) {
     $r = Invoke-AzRaw -Arguments @("keyvault", "secret", "show", "--vault-name", $VaultName, "--name", $Name, "--query", "value", "--output", "tsv")
     if ($r.ExitCode -ne 0) { return $null }
     return $r.Output.Trim()
@@ -78,10 +94,19 @@ function Extract-CredentialValue([string]$RawOutput) {
     return $filtered[-1]
 }
 
+$SubscriptionId = Resolve-ParamOrEnv -ProvidedValue $SubscriptionId -EnvVarNames @("AZURE_SUBSCRIPTION_ID", "AZURE_SUBSCRIPTION")
+if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
+    throw "Subscription ID is required. Set AZURE_SUBSCRIPTION_ID in environment or pass -SubscriptionId."
+}
+
 $account = Invoke-AzJson -Arguments @("account", "show")
 if ($account.Data.id -ne $SubscriptionId) {
     $set = Invoke-AzRaw -Arguments @("account", "set", "--subscription", $SubscriptionId)
     if ($set.ExitCode -ne 0) { throw "Unable to switch subscription: $($set.Output)" }
+}
+
+if ([string]::IsNullOrWhiteSpace($TenantId)) {
+    $TenantId = Resolve-ParamOrEnv -ProvidedValue $TenantId -EnvVarNames @("AZURE_TENANT_ID") -DefaultValue ([string]$account.Data.tenantId)
 }
 
 # ── SharePoint Online resource (SPO) ────────────────────────────────────────
@@ -107,6 +132,12 @@ $envs = if ($Env -eq "all") { @("dev", "prod") } else { @($Env) }
 foreach ($e in $envs) {
     Write-Host "`n==== Provisioning $e ====" -ForegroundColor Cyan
 
+    $targetVaultName = if ($e -eq "dev") {
+        Resolve-ParamOrEnv -ProvidedValue $DevVaultName -EnvVarNames @("KEY_VAULT_NAME_DEV") -DefaultValue "kv-sp-ingest-dev"
+    } else {
+        Resolve-ParamOrEnv -ProvidedValue $ProdVaultName -EnvVarNames @("KEY_VAULT_NAME_PROD") -DefaultValue "kv-sp-ingest-prod"
+    }
+
     $displayName = "spn-sharepoint-ingest-$e"
     $clientIdSecretName = "dm-sharepoint-$e-client-id"
     $clientSecretSecretName = "dm-sharepoint-$e-client-secret"
@@ -130,7 +161,7 @@ foreach ($e in $envs) {
     }
 
     $appId = [string]$app.appId
-    Set-KvSecret -Name $clientIdSecretName -Value $appId
+    Set-KvSecret -VaultName $targetVaultName -Name $clientIdSecretName -Value $appId
 
     $spShow = Invoke-AzJson -Arguments @("ad", "sp", "show", "--id", $appId) -AllowFailure
     if (-not $spShow.Success) {
@@ -192,23 +223,23 @@ foreach ($e in $envs) {
         Write-Host "[PASS] Graph Sites.ReadWrite.All already assigned for $displayName" -ForegroundColor Green
     }
 
-    $existingClientSecret = Get-SecretIfExists -Name $clientSecretSecretName
+    $existingClientSecret = Get-SecretIfExists -VaultName $targetVaultName -Name $clientSecretSecretName
     if ($RotateClientSecrets.IsPresent -or [string]::IsNullOrWhiteSpace($existingClientSecret)) {
         $newSecret = Invoke-AzRaw -Arguments @("ad", "app", "credential", "reset", "--id", $appId, "--append", "--display-name", "kv-$e-$(Get-Date -Format yyyyMMddHHmmss)", "--years", "2", "--query", "password", "--output", "tsv", "--only-show-errors")
         $newSecretValue = Extract-CredentialValue -RawOutput $newSecret.Output
         if ($newSecret.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($newSecretValue)) {
             throw "Failed generating client secret for ${displayName}: $($newSecret.Output)"
         }
-        Set-KvSecret -Name $clientSecretSecretName -Value $newSecretValue
+        Set-KvSecret -VaultName $targetVaultName -Name $clientSecretSecretName -Value $newSecretValue
         Write-Host "[PASS] Generated and stored new client secret for $displayName" -ForegroundColor Green
     } else {
         Write-Host "[PASS] Existing Key Vault client secret retained for $displayName" -ForegroundColor Green
     }
 
-    Set-KvSecret -Name $tenantSecretName -Value $TenantId
-    Set-KvSecret -Name $siteSecretName -Value $siteUrl
-    Set-KvSecret -Name $sqlServerSecretName -Value $sqlServer
-    Set-KvSecret -Name $sqlDbSecretName -Value $sqlDb
+    Set-KvSecret -VaultName $targetVaultName -Name $tenantSecretName -Value $TenantId
+    Set-KvSecret -VaultName $targetVaultName -Name $siteSecretName -Value $siteUrl
+    Set-KvSecret -VaultName $targetVaultName -Name $sqlServerSecretName -Value $sqlServer
+    Set-KvSecret -VaultName $targetVaultName -Name $sqlDbSecretName -Value $sqlDb
 
     if (-not $SkipSiteGrant.IsPresent) {
         Write-Host "[INFO] Site grant step is now manual and SharePoint-only." -ForegroundColor Cyan

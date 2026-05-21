@@ -9,7 +9,7 @@ from azure.keyvault.secrets import SecretClient
 def main() -> int:
     parser = argparse.ArgumentParser(description="Seed SharePoint credentials into Azure Key Vault")
     parser.add_argument("--env", required=True, choices=["dev", "prod"], help="Environment name")
-    parser.add_argument("--vault-url", required=True, help="Key Vault URL, e.g. https://keyvault-ingest.vault.azure.net/")
+    parser.add_argument("--vault-url", required=True, help="Key Vault URL, e.g. https://kv-sp-ingest-prod.vault.azure.net/")
     parser.add_argument("--client-id", required=True, help="Entra App Registration client ID")
     parser.add_argument("--client-secret", required=True, help="Entra App Registration client secret")
     parser.add_argument("--tenant-id", required=True, help="Tenant ID")

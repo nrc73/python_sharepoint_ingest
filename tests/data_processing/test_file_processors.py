@@ -4,8 +4,8 @@ from io import BytesIO
 
 import pandas as pd
 
-from src.file_processors.csv_processor import iter_csv_chunks_from_buffer, read_csv_from_bytes
-from src.file_processors.excel_processor import read_all_excel_sheets_from_bytes, read_excel_from_bytes
+from sharepoint_ingest.file_processors.csv_processor import iter_csv_chunks_from_buffer, read_csv_from_bytes
+from sharepoint_ingest.file_processors.excel_processor import read_all_excel_sheets_from_bytes, read_excel_from_bytes
 
 
 def test_read_csv_from_bytes() -> None:

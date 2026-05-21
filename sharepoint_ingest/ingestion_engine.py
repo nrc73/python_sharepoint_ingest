@@ -1,3 +1,5 @@
+"""Core ingestion orchestration engine for SharePoint-to-SQL pipelines."""
+
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -8,7 +10,7 @@ import logging
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -39,11 +41,7 @@ class ProcessResult:
     files_processed: int = 0
     files_failed: int = 0
     rows_loaded: int = 0
-    errors: list[str] = None
-
-    def __post_init__(self) -> None:
-        if self.errors is None:
-            self.errors = []
+    errors: list[str] = field(default_factory=list)
 
 
 class IngestionEngine:

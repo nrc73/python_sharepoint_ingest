@@ -1,3 +1,5 @@
+"""Azure Key Vault secret provider helpers with environment fallback."""
+
 from __future__ import annotations
 
 import os

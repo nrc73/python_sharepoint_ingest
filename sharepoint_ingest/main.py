@@ -1,3 +1,5 @@
+"""CLI entrypoint for running configured SharePoint ingestion workflows."""
+
 from __future__ import annotations
 
 import argparse

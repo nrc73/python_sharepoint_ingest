@@ -1,12 +1,14 @@
 """Test Microsoft Graph API for SharePoint (Sites.ReadWrite.All on Graph) vs SPO REST."""
 from __future__ import annotations
 import json, base64, sys
-sys.path.insert(0, ".")
+PROJECT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import requests
 from msal import ConfidentialClientApplication
-from src.config import load_settings
-from src.keyvault_client import maybe_build_provider
+from sharepoint_ingest.config import load_settings
+from sharepoint_ingest.keyvault_client import maybe_build_provider
 
 settings = load_settings(env_override="dev")
 provider = maybe_build_provider(settings.key_vault)

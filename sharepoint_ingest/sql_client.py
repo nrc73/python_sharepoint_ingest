@@ -1,3 +1,5 @@
+"""SQL access layer for configuration retrieval and data loading."""
+
 from __future__ import annotations
 
 import logging

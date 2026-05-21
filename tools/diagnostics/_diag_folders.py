@@ -1,14 +1,16 @@
 """Quick folder discovery for dev and prod SharePoint sites."""
 from __future__ import annotations
 import sys, traceback
-sys.path.insert(0, ".")
+PROJECT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 for env_name in ("dev", "prod"):
     print(f"\n=== {env_name.upper()} ===", flush=True)
     try:
-        from src.config import load_settings
-        from src.keyvault_client import maybe_build_provider
-        from src.sharepoint_client import SharePointClient
+        from sharepoint_ingest.config import load_settings
+        from sharepoint_ingest.keyvault_client import maybe_build_provider
+        from sharepoint_ingest.sharepoint_client import SharePointClient
 
         settings = load_settings(env_override=env_name)
         provider = maybe_build_provider(settings.key_vault)

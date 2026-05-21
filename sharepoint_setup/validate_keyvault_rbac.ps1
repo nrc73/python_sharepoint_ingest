@@ -296,7 +296,13 @@ foreach ($environmentName in $targetEnvironments) {
     Write-Section "Environment: $environmentName"
     $summary = New-EnvSummary -EnvironmentName $environmentName
 
-    $resolvedSubscription = if (-not [string]::IsNullOrWhiteSpace($SubscriptionId)) { $SubscriptionId } else { Resolve-PerEnvironmentValue -BaseName "AZURE_SUBSCRIPTION" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues }
+    $resolvedSubscription = if (-not [string]::IsNullOrWhiteSpace($SubscriptionId)) {
+        $SubscriptionId
+    }
+    else {
+        $v = Resolve-PerEnvironmentValue -BaseName "AZURE_SUBSCRIPTION_ID" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues
+        if (-not [string]::IsNullOrWhiteSpace($v)) { $v } else { Resolve-PerEnvironmentValue -BaseName "AZURE_SUBSCRIPTION" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues }
+    }
     $resolvedTenant = if (-not [string]::IsNullOrWhiteSpace($TenantId)) { $TenantId } else { Resolve-PerEnvironmentValue -BaseName "AZURE_TENANT_ID" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues }
     $resolvedResourceGroup = if (-not [string]::IsNullOrWhiteSpace($ResourceGroup)) { $ResourceGroup } else { Resolve-PerEnvironmentValue -BaseName "AZURE_RESOURCE_GROUP" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues }
     $resolvedVaultName = if (-not [string]::IsNullOrWhiteSpace($VaultName)) { $VaultName } else { Resolve-PerEnvironmentValue -BaseName "KEY_VAULT_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues }
@@ -310,7 +316,7 @@ foreach ($environmentName in $targetEnvironments) {
     }
 
     if ([string]::IsNullOrWhiteSpace($resolvedVaultName)) {
-        Add-Result -Summary $summary -Level "FAIL" -Message "Unable to resolve Key Vault name. Set KEY_VAULT_NAME, pass -VaultName, or provide KEY_VAULT_URL/-VaultUrl."
+        Add-Result -Summary $summary -Level "FAIL" -Message "Unable to resolve Key Vault name. Set KEY_VAULT_NAME[_ENV], pass -VaultName, or provide KEY_VAULT_URL[_ENV]/-VaultUrl."
         $overallSummaries += $summary
         continue
     }
@@ -336,7 +342,7 @@ foreach ($environmentName in $targetEnvironments) {
     $currentTenantId = [string]$accountNow.tenantId
 
     if (-not [string]::IsNullOrWhiteSpace($resolvedSubscription)) {
-        $subscriptionMatches = ($currentSubscriptionId -ieq $resolvedSubscription) -or ($currentSubscriptionName -ieq $resolvedSubscription)
+        $subscriptionMatches = ($currentSubscriptionId -ieq $resolvedSubscription)
         if (-not $subscriptionMatches -and $FixContext.IsPresent) {
             Add-Result -Summary $summary -Level "WARN" -Message "Azure subscription mismatch. Attempting 'az account set --subscription $resolvedSubscription'."
             $setResult = Invoke-AzRaw -Arguments @("account", "set", "--subscription", $resolvedSubscription)
@@ -350,7 +356,7 @@ foreach ($environmentName in $targetEnvironments) {
                     $currentSubscriptionId = [string]$accountNow.id
                     $currentSubscriptionName = [string]$accountNow.name
                     $currentTenantId = [string]$accountNow.tenantId
-                    $subscriptionMatches = ($currentSubscriptionId -ieq $resolvedSubscription) -or ($currentSubscriptionName -ieq $resolvedSubscription)
+                    $subscriptionMatches = ($currentSubscriptionId -ieq $resolvedSubscription)
                 }
             }
         }
@@ -359,11 +365,11 @@ foreach ($environmentName in $targetEnvironments) {
             Add-Result -Summary $summary -Level "PASS" -Message "Azure subscription context matches expected value '$resolvedSubscription'."
         }
         else {
-            Add-Result -Summary $summary -Level "FAIL" -Message "Azure subscription mismatch. Current='$currentSubscriptionName' ($currentSubscriptionId), Expected='$resolvedSubscription'."
+            Add-Result -Summary $summary -Level "FAIL" -Message "Azure subscription mismatch. CurrentId='$currentSubscriptionId', ExpectedId='$resolvedSubscription'. (Current name: '$currentSubscriptionName')"
         }
     }
     else {
-        Add-Result -Summary $summary -Level "WARN" -Message "Expected subscription is not configured (AZURE_SUBSCRIPTION[_ENV] or -SubscriptionId)."
+        Add-Result -Summary $summary -Level "WARN" -Message "Expected subscription is not configured (AZURE_SUBSCRIPTION_ID[_ENV] or -SubscriptionId)."
     }
 
     if (-not [string]::IsNullOrWhiteSpace($resolvedTenant)) {

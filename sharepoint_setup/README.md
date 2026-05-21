@@ -57,10 +57,15 @@ Creates:
 
 ## 3) Seed Azure Key Vault secrets
 
+This solution now uses separate vaults per environment:
+
+- `kv-sp-ingest-dev`
+- `kv-sp-ingest-prod`
+
 ```bash
 python sharepoint_setup/keyvault_setup.py \
   --env prod \
-  --vault-url https://keyvault-ingest.vault.azure.net/ \
+  --vault-url https://kv-sp-ingest-prod.vault.azure.net/ \
   --client-id <APP_CLIENT_ID> \
   --client-secret <APP_CLIENT_SECRET> \
   --tenant-id <TENANT_ID>
@@ -79,7 +84,7 @@ Optional SQL secrets can also be seeded for prod service-account auth:
 ```bash
 python sharepoint_setup/keyvault_setup.py \
   --env prod \
-  --vault-url https://keyvault-ingest.vault.azure.net/ \
+  --vault-url https://kv-sp-ingest-prod.vault.azure.net/ \
   --client-id <APP_CLIENT_ID> \
   --client-secret <APP_CLIENT_SECRET> \
   --tenant-id <TENANT_ID> \
@@ -110,7 +115,9 @@ What this script does:
 - assigns **Office 365 SharePoint Online** application permission `Sites.Selected`
 - attempts admin consent
 - generates client secrets (or keeps existing unless `-RotateClientSecrets`)
-- stores values in Key Vault `keyvault-ingest`:
+- stores values in environment-specific Key Vaults:
+  - `kv-sp-ingest-dev` (for `-Env dev`)
+  - `kv-sp-ingest-prod` (for `-Env prod`)
   - `dm-sharepoint-<env>-client-id`
   - `dm-sharepoint-<env>-client-secret`
   - `dm-sharepoint-<env>-tenant-id`
@@ -174,10 +181,20 @@ powershell -ExecutionPolicy Bypass -File .\sharepoint_setup\validate_keyvault_rb
 What the script validates:
 
 - active Azure CLI tenant/subscription context
-- vault resolution (`KEY_VAULT_NAME` / `KEY_VAULT_URL`)
+- vault resolution (`KEY_VAULT_NAME[_ENV]` / `KEY_VAULT_URL[_ENV]`)
 - token principal details (`appid`, `oid`, `tid`)
 - direct RBAC assignments at vault scope
 - actual secret-read access for expected secret names
+
+Recommended `.env` configuration for context and vault selection:
+
+- `AZURE_SUBSCRIPTION_ID=<subscription-guid>`
+- `AZURE_TENANT_ID=<tenant-guid>`
+- `AZURE_RESOURCE_GROUP=<resource-group>`
+- `KEY_VAULT_NAME_DEV=kv-sp-ingest-dev`
+- `KEY_VAULT_URL_DEV=https://kv-sp-ingest-dev.vault.azure.net/`
+- `KEY_VAULT_NAME_PROD=kv-sp-ingest-prod`
+- `KEY_VAULT_URL_PROD=https://kv-sp-ingest-prod.vault.azure.net/`
 
 > ⚠️ `-OutputSecretValues` prints plaintext secrets to terminal output. Use only in controlled sessions.
 
@@ -354,3 +371,93 @@ http://localhost:5000
 - If another SQL instance uses 1433, update host port mapping in the script and connect using `localhost,<new_port>`.
 - If using ODBC 18, trust server certificate for local container (`TrustServerCertificate=yes`).
 - To verify SQL from Python side, run `python sharepoint_setup/sql_connection_test.py --env prod`.
+
+---
+
+## Python Guide standards audit summary (`docs.python-guide.org`)
+
+This section captures the deep standards review completed for this repository against guidance in [The Hitchhiker's Guide to Python](https://docs.python-guide.org).
+
+### Audit scope
+
+- Repository structure and package layout (`sharepoint_ingest/`, `src/`, `sharepoint_setup/`, `tools/`, `tests/`)
+- Packaging and tooling (`pyproject.toml`, `requirements.txt`, `requirements-dev.txt`, `pytest.ini`, `.pre-commit-config.yaml`, `.gitignore`)
+- Core runtime modules and import hygiene
+- Test/runtime health checks and dependency consistency
+
+### Verification checks executed
+
+- `python -B -m pytest -q` → `40 passed`
+- `python -m pip check` → `No broken requirements found`
+- `python -B -m compileall -q sharepoint_ingest tests sharepoint_setup tools` → passed
+- import/reference scans for legacy `src` imports in active code paths
+
+To avoid generating bytecode cache artifacts (`__pycache__`, `*.pyc`) during ad-hoc local runs,
+prefer `python -B ...` and/or set:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = "1"
+```
+
+### Compliance outcome
+
+#### ✅ Strong alignment areas
+
+1. **Environment/dependency discipline**
+   - Virtual environment workflow documented and used.
+   - Runtime and dev dependencies are separated (`requirements.txt` + `requirements-dev.txt`).
+
+2. **Modern packaging metadata**
+   - `pyproject.toml` is present with build-system metadata and tool sections.
+
+3. **Testing baseline is healthy**
+   - Automated tests are organized under `tests/` and currently all passing.
+
+4. **Code organization and modularity**
+   - Core ingestion code is split into focused modules (config, engine, clients, validator, notifications).
+
+5. **Import/style anti-pattern reduction**
+   - No wildcard imports (`from x import *`) found in audited code.
+
+#### ⚠️ Partial alignment / cleanup items
+
+1. **Dual package roots exist (`src/` and `sharepoint_ingest/`)**
+   - Both trees currently exist and contain near-duplicate module sets.
+   - This can create ambiguity for import path ownership.
+
+2. **Pytest config appears in two places**
+   - `pytest.ini` and `[tool.pytest.ini_options]` in `pyproject.toml` both exist.
+   - Prefer a single source of truth.
+
+3. **Docstring consistency gaps outside core package**
+   - Several setup/tools/test modules still lack module-level docstrings.
+
+4. **Lint tooling configured but not guaranteed installed in all environments**
+   - Ruff config exists; ensure dev extras are installed where lint checks run.
+
+5. **Repository hygiene cleanup still recommended**
+   - Stray root artifacts detected (`2.32.3`, `=`).
+   - Local `__pycache__` folders are present (not unusual locally, but should remain ignored/untracked).
+
+### Priority remediation plan
+
+#### P0 (high impact)
+
+- Consolidate to one canonical package path (`sharepoint_ingest`) and phase out duplicate implementation ownership in `src/`.
+- Enforce CI quality gates for:
+  - `pytest -q`
+  - `ruff check`
+
+#### P1
+
+- Unify pytest configuration into one location (prefer `pyproject.toml`).
+- Remove stray root artifacts (`2.32.3`, `=`).
+
+#### P2
+
+- Add module-level docstrings for remaining setup/tool/test modules.
+- Optionally rename operational scripts that end with `_test.py` to reduce ambiguity with test discovery semantics.
+
+### Bottom line
+
+The project is in **good shape and broadly aligned** with Python Guide recommendations for packaging, dependencies, and testability. The most important remaining improvement is to fully converge on a **single canonical package root** and complete a small set of tooling/repository hygiene cleanups.

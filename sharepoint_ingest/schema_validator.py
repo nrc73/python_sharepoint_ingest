@@ -1,3 +1,5 @@
+"""Schema comparison and data-profile validation utilities."""
+
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation

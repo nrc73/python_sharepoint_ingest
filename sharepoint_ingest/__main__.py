@@ -1,4 +1,4 @@
-"""Compatibility wrapper for legacy `python -m src`."""
+"""Module launcher for `python -m sharepoint_ingest`."""
 
 from sharepoint_ingest.main import run
 

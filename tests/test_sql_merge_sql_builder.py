@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.sql_client import SqlClient
+from sharepoint_ingest.sql_client import SqlClient
 
 
 def test_build_merge_sql_contains_expected_clauses() -> None:

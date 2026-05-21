@@ -75,7 +75,7 @@ and audit-log interpretation, see:
 docs/                     # architecture and sequence documentation
 sharepoint_setup/         # setup and verification scripts
 sql/                      # SQL bootstrap scripts
-src/                      # ingestion framework source code
+sharepoint_ingest/        # ingestion framework source code
 tests/                    # unit tests and sample artifacts
 tools/                    # helper scripts (including sample artifact generation)
 ```
@@ -157,6 +157,15 @@ python sharepoint_setup\sharepoint_auth_test.py --env prod --folder "/sites/data
 
 ---
 
+## Logging and log retention
+
+- Runtime logs are written to the local `logs/` folder.
+- Log files use the pattern `sharepoint_ingestion_YYYYMMDD_HHMMSS.log`.
+- On each process start (when logging is configured), automatic retention keeps only the latest **10** matching ingestion log files.
+- Older matching log files are deleted automatically; unrelated files in `logs/` are not touched.
+
+---
+
 ## Disable Python cache artifacts (`.pyc` / `__pycache__`)
 
 If you do not want local cache files generated during normal runs, set:
@@ -169,7 +178,7 @@ And prefer `python -B` for explicit commands, for example:
 
 ```powershell
 python -B -m pytest -q
-python -B -m src.main --env prod --dry-run
+python -B -m sharepoint_ingest.main --env prod --dry-run
 ```
 
 This repo also disables pytest's `.pytest_cache` plugin output by default.
@@ -207,13 +216,13 @@ Retrospective compatibility fields remain in scope (`process_id`, `workflow_id`)
 After standalone validation is complete, the Python runner can be executed from SSIS (Execute Process Task), for example:
 
 ```text
-python -m src.main --env prod --ingestion-scope real --process-id <GUID>
+python -m sharepoint_ingest.main --env prod --ingestion-scope real --process-id <GUID>
 ```
 
 To run sample/test artifact ingestions explicitly:
 
 ```text
-python -m src.main --env dev --ingestion-scope test
+python -m sharepoint_ingest.main --env dev --ingestion-scope test
 ```
 
 Planned validation includes standalone Python runs first, then SSIS package integration tests (for example via Visual Studio Community + SSDT and SQL tooling).

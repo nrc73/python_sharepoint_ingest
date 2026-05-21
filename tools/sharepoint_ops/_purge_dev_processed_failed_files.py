@@ -1,19 +1,21 @@
 """Purge files from SharePoint dev Processed/Failed folders for valid artifact groups.
 
 Usage:
-    python _purge_dev_processed_failed_files.py
+    python tools/sharepoint_ops/_purge_dev_processed_failed_files.py
 """
 from __future__ import annotations
 
 import sys
 
-sys.path.insert(0, ".")
+PROJECT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import requests as _requests
 
-from src.config import load_settings
-from src.keyvault_client import maybe_build_provider
-from src.sharepoint_client import SharePointClient, _GRAPH_BASE
+from sharepoint_ingest.config import load_settings
+from sharepoint_ingest.keyvault_client import maybe_build_provider
+from sharepoint_ingest.sharepoint_client import SharePointClient, _GRAPH_BASE
 
 
 def delete_file(sp: SharePointClient, file_server_relative_url: str) -> None:

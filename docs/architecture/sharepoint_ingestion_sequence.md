@@ -40,7 +40,7 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     actor Ops as Operator / Scheduler
-    participant Py as Python runner (src.main)
+    participant Py as Python runner (sharepoint_ingest.main)
     participant AKV as Azure Key Vault
     participant SP as SharePoint Online
     participant SQL as SQL Server

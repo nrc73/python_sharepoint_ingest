@@ -10,7 +10,7 @@ flowchart LR
     subgraph OPS[Operations & Scheduling]
         OP1[Operator / Scheduler]
         OP2[Pre-check scripts\nkeyvault_secret_test\nsql_connection_test\nsharepoint_auth_test\nspn_healthcheck_test]
-        OP3[Python ingestion runner\npython -m src.main]
+        OP3[Python ingestion runner\npython -m sharepoint_ingest.main]
     end
 
     OP1 --> OP2

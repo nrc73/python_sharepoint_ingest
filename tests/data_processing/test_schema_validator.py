@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.schema_validator import validate_source_against_destination
+from sharepoint_ingest.schema_validator import validate_source_against_destination
 
 
 def test_schema_validator_detects_missing_and_additional_columns() -> None:

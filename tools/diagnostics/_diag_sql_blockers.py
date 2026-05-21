@@ -1,6 +1,6 @@
 """Quick diagnostic: check for SQL blocking, locks and log pressure on ingest_dev."""
-from src.config import load_settings
-from src.sql_client import SqlClient
+from sharepoint_ingest.config import load_settings
+from sharepoint_ingest.sql_client import SqlClient
 
 s = load_settings(env_override='dev')
 c = SqlClient(s.sql)

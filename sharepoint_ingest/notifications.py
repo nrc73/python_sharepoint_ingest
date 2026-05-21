@@ -1,3 +1,5 @@
+"""Email notification helpers for validation and ingestion failures."""
+
 from __future__ import annotations
 
 from collections import Counter

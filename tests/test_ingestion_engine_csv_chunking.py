@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from src.ingestion_engine import IngestionEngine
-from src.models import IngestionConfig
+from sharepoint_ingest.ingestion_engine import IngestionEngine
+from sharepoint_ingest.models import IngestionConfig
 
 
 class DummySharePointClient:
@@ -417,7 +417,7 @@ def test_append_load_raises_pk_violation_value_error_on_integrity_error() -> Non
     with the PRIMARY_KEY_VIOLATION: prefix so the engine can identify it specifically."""
     from unittest.mock import MagicMock, patch
     from sqlalchemy.exc import IntegrityError as SqlIntegrityError
-    from src.sql_client import SqlClient
+    from sharepoint_ingest.sql_client import SqlClient
 
     mock_settings = MagicMock()
     mock_settings.odbc_driver = "ODBC Driver 17 for SQL Server"
@@ -510,7 +510,7 @@ def test_notify_pk_violation_builds_dedicated_subject_and_remediation_body() -> 
 def test_pk_violation_email_body_contains_full_context() -> None:
     """build_pk_violation_email_body includes file name, table, key columns, duplicate count,
     sample values, resource telemetry, and remediation options."""
-    from src.notifications import build_pk_violation_email_body
+    from sharepoint_ingest.notifications import build_pk_violation_email_body
 
     body = build_pk_violation_email_body(
         process_name="config_id=1, workflow_id=wf-test",

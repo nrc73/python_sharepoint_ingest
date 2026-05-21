@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import sys
 
-sys.path.insert(0, ".")
+PROJECT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.config import load_settings
-from src.sql_client import SqlClient
+from sharepoint_ingest.config import load_settings
+from sharepoint_ingest.sql_client import SqlClient
 
 
 def _count(sql_client: SqlClient, query: str) -> int:

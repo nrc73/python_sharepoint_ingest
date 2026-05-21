@@ -1,10 +1,12 @@
 """Decode both Graph and SharePoint-scoped tokens to compare roles claims."""
 from __future__ import annotations
 import json, base64, sys
-sys.path.insert(0, ".")
+PROJECT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.config import load_settings
-from src.keyvault_client import maybe_build_provider
+from sharepoint_ingest.config import load_settings
+from sharepoint_ingest.keyvault_client import maybe_build_provider
 from msal import ConfidentialClientApplication
 
 def decode_jwt(token: str) -> dict:

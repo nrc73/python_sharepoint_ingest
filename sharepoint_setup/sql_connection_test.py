@@ -11,9 +11,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.config import load_settings
-from src.keyvault_client import maybe_build_provider
-from src.sql_client import SqlClient
+from sharepoint_ingest.config import load_settings
+from sharepoint_ingest.keyvault_client import maybe_build_provider
+from sharepoint_ingest.sql_client import SqlClient
 
 
 SUPPORTED_ENVIRONMENTS = ("dev", "prod")
