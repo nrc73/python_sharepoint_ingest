@@ -168,7 +168,7 @@ def validate_source_against_destination(
             if max_len > int(dest_len):
                 issues.append(
                     ValidationIssue(
-                        severity="WARNING",
+                        severity="ERROR",
                         code="STRING_LENGTH_EXCEEDED",
                         message=f"Potential string truncation in column '{source_name}'.",
                         details=f"source_max_len={max_len}, destination_max_len={dest_len}",
@@ -202,7 +202,7 @@ def validate_source_against_destination(
                     if observed_max_precision > max_precision:
                         issues.append(
                             ValidationIssue(
-                                severity="WARNING",
+                                severity="ERROR",
                                 code="NUMERIC_PRECISION_EXCEEDED",
                                 message=f"Numeric precision exceeded for column '{source_name}'.",
                                 details=(
@@ -216,7 +216,7 @@ def validate_source_against_destination(
                     if observed_max_scale > max_scale:
                         issues.append(
                             ValidationIssue(
-                                severity="WARNING",
+                                severity="ERROR",
                                 code="NUMERIC_SCALE_EXCEEDED",
                                 message=f"Numeric scale exceeded for column '{source_name}'.",
                                 details=(

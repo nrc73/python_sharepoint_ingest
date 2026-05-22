@@ -53,6 +53,21 @@ def test_schema_validator_detects_type_mismatch() -> None:
     assert any(i.code == "TYPE_MISMATCH" for i in issues)
 
 
+def test_schema_validator_detects_string_length_exceeded_as_error() -> None:
+    source = pd.DataFrame({"name": ["short", "this value is definitely too long"]})
+    destination_columns = [
+        {
+            "column_name": "name",
+            "data_type": "nvarchar",
+            "character_maximum_length": 10,
+        }
+    ]
+
+    issues = validate_source_against_destination(source, destination_columns)
+    length_issue = next(i for i in issues if i.code == "STRING_LENGTH_EXCEEDED")
+    assert length_issue.severity == "ERROR"
+
+
 def test_schema_validator_detects_numeric_precision_exceeded() -> None:
     source = pd.DataFrame({"amount": [123456.78, 12.34]})
     destination_columns = [
@@ -66,7 +81,8 @@ def test_schema_validator_detects_numeric_precision_exceeded() -> None:
     ]
 
     issues = validate_source_against_destination(source, destination_columns)
-    assert any(i.code == "NUMERIC_PRECISION_EXCEEDED" for i in issues)
+    precision_issue = next(i for i in issues if i.code == "NUMERIC_PRECISION_EXCEEDED")
+    assert precision_issue.severity == "ERROR"
 
 
 def test_schema_validator_detects_numeric_scale_exceeded() -> None:
@@ -82,7 +98,8 @@ def test_schema_validator_detects_numeric_scale_exceeded() -> None:
     ]
 
     issues = validate_source_against_destination(source, destination_columns)
-    assert any(i.code == "NUMERIC_SCALE_EXCEEDED" for i in issues)
+    scale_issue = next(i for i in issues if i.code == "NUMERIC_SCALE_EXCEEDED")
+    assert scale_issue.severity == "ERROR"
 
 
 def test_schema_validator_numeric_within_precision_scale_has_no_numeric_exceeded_issues() -> None:

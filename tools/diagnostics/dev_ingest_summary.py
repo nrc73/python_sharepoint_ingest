@@ -18,9 +18,11 @@ def main() -> int:
     checks = {
         "dest_customers": "SELECT COUNT(1) AS cnt FROM dbo.dest_customers",
         "dest_transactions": "SELECT COUNT(1) AS cnt FROM dbo.dest_transactions",
+        "dest_transactions_parquet": "SELECT COUNT(1) AS cnt FROM dbo.dest_transactions_parquet",
         "dest_transactions_large": "SELECT COUNT(1) AS cnt FROM dbo.dest_transactions_large",
         "dest_invalid_csv": "SELECT COUNT(1) AS cnt FROM dbo.dest_invalid_csv",
         "dest_invalid_excel": "SELECT COUNT(1) AS cnt FROM dbo.dest_invalid_excel",
+        "dest_invalid_parquet": "SELECT COUNT(1) AS cnt FROM dbo.dest_invalid_parquet",
         "audit_total": "SELECT COUNT(1) AS cnt FROM log.sharepoint_ingestion_audit",
         "audit_success": "SELECT COUNT(1) AS cnt FROM log.sharepoint_ingestion_audit WHERE status='SUCCESS'",
         "audit_failed": "SELECT COUNT(1) AS cnt FROM log.sharepoint_ingestion_audit WHERE status='FAILED'",

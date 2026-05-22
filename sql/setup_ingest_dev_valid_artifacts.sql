@@ -95,6 +95,30 @@ BEGIN
 END
 GO
 
+IF OBJECT_ID('dbo.dest_transactions_parquet', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.dest_transactions_parquet (
+        transaction_id VARCHAR(20) NOT NULL,
+        customer_id VARCHAR(20) NULL,
+        transaction_date DATE NULL,
+        amount DECIMAL(18,2) NULL,
+        currency VARCHAR(10) NULL,
+        status VARCHAR(20) NULL,
+        source_system VARCHAR(50) NULL,
+        source_file_name VARCHAR(255) NULL,
+        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_dest_transactions_parquet PRIMARY KEY (transaction_id)
+    );
+END
+GO
+
+IF COL_LENGTH('dbo.dest_transactions_parquet', 'source_file_name') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_transactions_parquet ADD source_file_name VARCHAR(255) NULL;
+END
+GO
+
 IF OBJECT_ID('dbo.dest_transactions_large', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.dest_transactions_large (
@@ -390,6 +414,81 @@ WHEN NOT MATCHED THEN
         'APPEND',
         'transaction_id',
         '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status"}'
+    );
+GO
+
+MERGE config.sharepoint_ingestion AS target
+USING (SELECT 'wf-valid-transactions-parquet' AS workflow_id) AS source
+ON target.workflow_id = source.workflow_id
+WHEN MATCHED THEN
+    UPDATE SET
+        sharepoint_base_url = '{env:sharepoint_site_url}',
+        sharepoint_process_folder = '/Documents/valid_parquet',
+        excel_tab_name = '',
+        sharepoint_process_archive_folder = '/Documents/valid_parquet/Processed',
+        sharepoint_process_failed_folder = '/Documents/valid_parquet/Failed',
+        process_frequency = 'OnDemand',
+        header_skip_rows = 0,
+        check_source_dest_columns = '1',
+        multi_file_ingest = '1',
+        error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
+        process_id = COALESCE(target.process_id, NEWID()),
+        staging_table_name = 'dbo.dest_transactions_parquet',
+        is_active = '1',
+        ingestion_scope = 'TEST',
+        ingestion_domain = 'sample_artifacts',
+        is_test_data = 1,
+        file_name_pattern = 'valid_transactions_parquet_*.parquet',
+        load_strategy = 'APPEND',
+        merge_key_columns = 'transaction_id',
+        column_mapping_json = '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status","SourceSystem":"source_system"}',
+        sp_ingest_modified_utc = SYSUTCDATETIME()
+WHEN NOT MATCHED THEN
+    INSERT (
+        sharepoint_base_url,
+        sharepoint_process_folder,
+        excel_tab_name,
+        sharepoint_process_archive_folder,
+        sharepoint_process_failed_folder,
+        process_frequency,
+        header_skip_rows,
+        check_source_dest_columns,
+        multi_file_ingest,
+        error_notification_email_address,
+        process_id,
+        workflow_id,
+        staging_table_name,
+        is_active,
+        ingestion_scope,
+        ingestion_domain,
+        is_test_data,
+        file_name_pattern,
+        load_strategy,
+        merge_key_columns,
+        column_mapping_json
+    )
+    VALUES (
+        '{env:sharepoint_site_url}',
+        '/Documents/valid_parquet',
+        '',
+        '/Documents/valid_parquet/Processed',
+        '/Documents/valid_parquet/Failed',
+        'OnDemand',
+        0,
+        '1',
+        '1',
+        'NathanChapman@company715.onmicrosoft.com',
+        NEWID(),
+        'wf-valid-transactions-parquet',
+        'dbo.dest_transactions_parquet',
+        '1',
+        'TEST',
+        'sample_artifacts',
+        1,
+        'valid_transactions_parquet_*.parquet',
+        'APPEND',
+        'transaction_id',
+        '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status","SourceSystem":"source_system"}'
     );
 GO
 

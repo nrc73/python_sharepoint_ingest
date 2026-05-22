@@ -63,6 +63,7 @@ class AppSettings:
     default_file_pattern: str
     null_alert_threshold: float
     enable_chunked_csv: bool
+    enable_chunked_parquet: bool
     ingest_chunk_size_rows: int
     azure_subscription_id: Optional[str]
     azure_resource_group: Optional[str]
@@ -189,6 +190,7 @@ def load_settings(env_override: Optional[str] = None) -> AppSettings:
         default_file_pattern=os.getenv("DEFAULT_FILE_PATTERN", "*"),
         null_alert_threshold=float(os.getenv("NULL_ALERT_THRESHOLD", "0.90")),
         enable_chunked_csv=_as_bool(os.getenv("ENABLE_CHUNKED_CSV"), default=False),
+        enable_chunked_parquet=_as_bool(os.getenv("ENABLE_CHUNKED_PARQUET"), default=True),
         ingest_chunk_size_rows=max(1, int(os.getenv("INGEST_CHUNK_SIZE_ROWS", "5000"))),
         azure_subscription_id=os.getenv("AZURE_SUBSCRIPTION_ID") or os.getenv("AZURE_SUBSCRIPTION"),
         azure_resource_group=os.getenv("AZURE_RESOURCE_GROUP"),

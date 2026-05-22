@@ -6,6 +6,7 @@ import pandas as pd
 
 from sharepoint_ingest.file_processors.csv_processor import iter_csv_chunks_from_buffer, read_csv_from_bytes
 from sharepoint_ingest.file_processors.excel_processor import read_all_excel_sheets_from_bytes, read_excel_from_bytes
+from sharepoint_ingest.file_processors.parquet_processor import iter_parquet_chunks_from_buffer, read_parquet_from_bytes
 
 
 def test_read_csv_from_bytes() -> None:
@@ -51,3 +52,25 @@ def test_read_excel_all_sheets_from_bytes() -> None:
 
     all_sheets = read_all_excel_sheets_from_bytes(payload)
     assert set(all_sheets.keys()) == {"S1", "S2"}
+
+
+def test_read_parquet_from_bytes() -> None:
+    source = pd.DataFrame({"id": [1, 2], "value": ["a", "b"]})
+    payload = source.to_parquet(index=False)
+
+    parsed = read_parquet_from_bytes(payload)
+
+    assert list(parsed.columns) == ["id", "value"]
+    assert len(parsed) == 2
+
+
+def test_iter_parquet_chunks_from_buffer() -> None:
+    source = pd.DataFrame({"id": [1, 2, 3, 4, 5], "value": ["a", "b", "c", "d", "e"]})
+    payload = source.to_parquet(index=False)
+
+    chunks = list(iter_parquet_chunks_from_buffer(BytesIO(payload), chunk_size=2))
+
+    assert len(chunks) == 3
+    assert list(chunks[0]["id"]) == [1, 2]
+    assert list(chunks[1]["id"]) == [3, 4]
+    assert list(chunks[2]["id"]) == [5]

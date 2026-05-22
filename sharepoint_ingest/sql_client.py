@@ -372,6 +372,117 @@ class SqlClient:
                 f"rows before retrying APPEND. Original error: {exc}"
             ) from exc
 
+    def load_chunk_to_temp(
+        self,
+        df: pd.DataFrame,
+        temp_table: str,
+        schema: str,
+        first_chunk: bool,
+    ) -> None:
+        """Append *df* into a temporary staging table within *schema*.
+
+        On the first chunk (``first_chunk=True``) the table is created/replaced via
+        ``if_exists="replace"``.  On subsequent chunks rows are appended.
+        Uses ``fast_executemany`` via ``method=None`` — same path as :meth:`append_load`.
+        """
+        if df.empty:
+            return
+        df.to_sql(
+            name=temp_table,
+            schema=schema,
+            con=self._engine,
+            if_exists="replace" if first_chunk else "append",
+            index=False,
+            chunksize=10_000,
+            method=None,
+        )
+
+    def check_temp_table_for_pk_duplicates(
+        self,
+        temp_table: str,
+        schema: str,
+        key_columns: list[str],
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """Return *(total_duplicate_rows, sample_records)* for the temp staging table.
+
+        Executes a ``GROUP BY … HAVING COUNT(*) > 1`` entirely in SQL — no
+        row-by-row Python scan — so it scales to hundreds of millions of rows.
+        Returns ``(0, [])`` when no duplicates are found.
+        """
+        if not key_columns:
+            return 0, []
+
+        key_cols_q = ", ".join(_quote_identifier(k) for k in key_columns)
+        temp_q = f"{_quote_identifier(schema)}.{_quote_identifier(temp_table)}"
+
+        count_sql = f"""
+            SELECT ISNULL(SUM(grp_cnt), 0) AS total_dup_rows
+            FROM (
+                SELECT COUNT(*) AS grp_cnt
+                FROM {temp_q}
+                GROUP BY {key_cols_q}
+                HAVING COUNT(*) > 1
+            ) AS _dup_groups
+        """
+        count_rows = self.query_rows(count_sql)
+        total_dup_rows = int(count_rows[0].get("total_dup_rows") or 0) if count_rows else 0
+
+        if total_dup_rows == 0:
+            return 0, []
+
+        sample_sql = f"""
+            SELECT TOP 5 {key_cols_q}
+            FROM {temp_q}
+            GROUP BY {key_cols_q}
+            HAVING COUNT(*) > 1
+        """
+        sample_records = self.query_rows(sample_sql)
+        return total_dup_rows, sample_records
+
+    def swap_temp_to_destination(
+        self,
+        temp_table: str,
+        schema: str,
+        destination_table: str,
+        load_strategy: str,
+    ) -> None:
+        """Atomically copy all rows from *temp_table* into *destination_table*, then drop temp.
+
+        For ``TRUNCATE`` strategy the destination is cleared first inside the same
+        transaction so no partial state is ever visible.  For ``APPEND`` rows are
+        inserted without prior truncation.
+
+        The temp table is **always** dropped (success or error) via a ``finally`` block.
+        """
+        temp_q = f"{_quote_identifier(schema)}.{_quote_identifier(temp_table)}"
+        dest_q = f"{_quote_identifier(schema)}.{_quote_identifier(destination_table)}"
+
+        try:
+            with self._engine.begin() as conn:
+                if load_strategy == "TRUNCATE":
+                    conn.execute(text(f"TRUNCATE TABLE {dest_q}"))
+                try:
+                    conn.execute(text(f"INSERT INTO {dest_q} SELECT * FROM {temp_q}"))
+                except SqlIntegrityError as exc:
+                    raise ValueError(
+                        f"PRIMARY_KEY_VIOLATION: Committing rows from staging temp table to "
+                        f"'{schema}.{destination_table}' failed due to a primary key or "
+                        f"unique constraint violation. Original error: {exc}"
+                    ) from exc
+        finally:
+            self.drop_temp_table(temp_table, schema)
+
+    def drop_temp_table(self, temp_table: str, schema: str) -> None:
+        """Drop *temp_table* if it exists — safe to call even if already dropped."""
+        temp_q = f"{_quote_identifier(schema)}.{_quote_identifier(temp_table)}"
+        try:
+            with self._engine.begin() as conn:
+                conn.execute(text(f"DROP TABLE IF EXISTS {temp_q}"))
+        except Exception:
+            self._logger.warning(
+                "Could not drop temp table %s.%s during cleanup", schema, temp_table
+            )
+
     def merge_load(self, df: pd.DataFrame, table_name: str, merge_keys: list[str]) -> None:
         if not merge_keys:
             raise ValueError("merge_keys must be supplied for merge strategy")

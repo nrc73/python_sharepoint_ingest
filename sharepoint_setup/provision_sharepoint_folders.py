@@ -142,9 +142,11 @@ def _build_folder_specs(site_path: str, library_name: str) -> list[FolderSpec]:
     groups = [
         "valid_customers",
         "valid_transactions",
+        "valid_parquet",
         "valid_transactions_large",
         "invalid_csv",
         "invalid_excel",
+        "invalid_parquet",
     ]
 
     specs: list[FolderSpec] = []

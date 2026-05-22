@@ -94,7 +94,11 @@ def _matches_pattern(name: str, pattern: str) -> bool:
 
 def _artifact_candidates() -> list[Path]:
     root = PROJECT_ROOT / "tests" / "sample_artifacts"
-    return sorted([p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in {".csv", ".xlsx", ".xlsm", ".xls"}])
+    return sorted([
+        p
+        for p in root.rglob("*")
+        if p.is_file() and p.suffix.lower() in {".csv", ".xlsx", ".xlsm", ".xls", ".parquet"}
+    ])
 
 
 def main() -> int:

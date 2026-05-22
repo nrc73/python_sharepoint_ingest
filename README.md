@@ -21,6 +21,7 @@ This repository is being delivered in phases. The current phase includes repeata
 - validate unacceptable source types vs destination table types
 - support Excel multi-tab ingestion and multi-file Excel ingestion
 - support CSV chunked ingestion for large files
+- support Parquet ingestion (single-file and multi-file), with optional chunked processing
 
 ### Error and edge-case coverage
 
@@ -90,10 +91,17 @@ Generate all valid/invalid sample CSV/XLSX artifacts:
 python tools/generate_sample_artifacts.py
 ```
 
+Generate an optional large Parquet artifact (for example ~2GB, 20+ columns):
+
+```powershell
+python tools/generate_sample_artifacts.py --large-parquet --target-size-gb 2 --parquet-columns 20
+```
+
 Output location:
 
 - `tests/sample_artifacts/valid/excel/`
 - `tests/sample_artifacts/valid/csv/`
+- `tests/sample_artifacts/valid/parquet/` (only when `--large-parquet` is used)
 - `tests/sample_artifacts/invalid/excel/`
 - `tests/sample_artifacts/invalid/csv/`
 
@@ -108,6 +116,7 @@ And multiple valid CSV files (including a large chunking file):
 - `valid_transactions_001.csv`
 - `valid_transactions_002.csv`
 - `valid_transactions_large.csv`
+- optional large Parquet output in `valid/parquet/` (for example `valid_transactions_large_2_0gb.parquet`)
 
 See `tests/sample_artifacts/README.md` for detailed file-by-file intent.
 

@@ -1,3 +1,5 @@
+"""Microsoft Graph SharePoint client used by ingestion workflows."""
+
 from __future__ import annotations
 
 import os
@@ -159,6 +161,86 @@ class SharePointClient:
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("Unexpected download failure without exception details")
+
+    def get_file_item(self, server_relative_url: str) -> dict:
+        """Return the Graph driveItem metadata dict for a file.
+
+        The response includes ``size`` (file size in bytes) and
+        ``@microsoft.graph.downloadUrl`` — a pre-authenticated CDN URL that
+        supports HTTP range requests without an Authorization header and avoids
+        the CDN redirect issued by the ``/content`` endpoint.
+        """
+        drive_id, path = self._server_url_to_drive_path(server_relative_url)
+        return self._get_json(f"{_GRAPH_BASE}/drives/{drive_id}/root:{path}:")
+
+    def download_file_range_bytes(
+        self,
+        server_relative_url: str,
+        start_byte: int,
+        end_byte: int,
+        *,
+        download_url: str | None = None,
+    ) -> bytes:
+        """Download the byte range ``[start_byte, end_byte]`` (inclusive) from a file.
+
+        Sends ``Range: bytes={start}-{end}`` on an HTTP GET.  When *download_url*
+        is provided (the ``@microsoft.graph.downloadUrl`` value from
+        :meth:`get_file_item`) it is used directly without an Authorization
+        header — significantly reducing per-request overhead and avoiding the
+        redirect that the Graph ``/content`` endpoint issues.
+        """
+        if end_byte < start_byte:
+            return b""
+
+        range_header = f"bytes={start_byte}-{end_byte}"
+        attempts = 4
+        last_exc: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                if download_url:
+                    resp = _requests.get(
+                        download_url, headers={"Range": range_header}, timeout=180
+                    )
+                    # The pre-authenticated CDN URL can expire mid-run on long
+                    # validations. If it does, fall back to the Graph /content
+                    # flow for this request (fresh auth, fresh redirect URL).
+                    if resp.status_code in {401, 403, 404}:
+                        drive_id, path = self._server_url_to_drive_path(server_relative_url)
+                        content_url = f"{_GRAPH_BASE}/drives/{drive_id}/root:{path}:/content"
+                        redir = _requests.get(
+                            content_url,
+                            headers=self._auth_headers(),
+                            allow_redirects=False,
+                            timeout=30,
+                        )
+                        redir.raise_for_status()
+                        cdn_url = redir.headers.get("Location", content_url)
+                        resp = _requests.get(cdn_url, headers={"Range": range_header}, timeout=180)
+                else:
+                    # Resolve the pre-authenticated CDN URL first to avoid the
+                    # redirect stripping the Range header.
+                    drive_id, path = self._server_url_to_drive_path(server_relative_url)
+                    content_url = f"{_GRAPH_BASE}/drives/{drive_id}/root:{path}:/content"
+                    redir = _requests.get(
+                        content_url,
+                        headers=self._auth_headers(),
+                        allow_redirects=False,
+                        timeout=30,
+                    )
+                    cdn_url = redir.headers.get("Location", content_url)
+                    resp = _requests.get(cdn_url, headers={"Range": range_header}, timeout=180)
+                resp.raise_for_status()
+                return resp.content
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= attempts or not self._is_transient_request_error(exc):
+                    raise
+                time.sleep(min(8, 2 ** (attempt - 1)))
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Unexpected range-download failure without exception details")
 
     def _patch_json(self, url: str, body: dict) -> dict:
         headers = self._auth_headers()

@@ -25,6 +25,20 @@ class DummySharePointClient:
     def download_file_to_bytes(self, server_relative_url: str) -> bytes:
         return self._payload
 
+    def get_file_item(self, server_relative_url: str) -> dict:
+        """Return minimal Graph item metadata backed by the in-memory payload."""
+        return {"size": len(self._payload), "@microsoft.graph.downloadUrl": None}
+
+    def download_file_range_bytes(
+        self,
+        server_relative_url: str,
+        start: int,
+        end: int,
+        download_url: str | None = None,
+    ) -> bytes:
+        """Serve byte ranges from the in-memory payload."""
+        return self._payload[start : end + 1]
+
     def move_file(self, src_server_relative_url: str, dest_folder_server_relative_url: str) -> str:
         self.moved_to.append((src_server_relative_url, dest_folder_server_relative_url))
         return f"{dest_folder_server_relative_url.rstrip('/')}/moved.csv"
@@ -32,7 +46,7 @@ class DummySharePointClient:
 
 class DummySqlClient:
     def __init__(self):
-        self.calls: list[tuple[str, int]] = []
+        self.calls: list[tuple] = []
 
     def truncate_and_load(self, df: pd.DataFrame, table_name: str) -> None:
         self.calls.append(("truncate_and_load", len(df)))
@@ -42,6 +56,23 @@ class DummySqlClient:
 
     def merge_load(self, df: pd.DataFrame, table_name: str, merge_keys: list[str]) -> None:
         self.calls.append(("merge_load", len(df)))
+
+    # ── single-pass Parquet temp-table helpers ────────────────────────────────
+
+    def load_chunk_to_temp(self, df: pd.DataFrame, temp_table: str, schema: str, first_chunk: bool) -> None:
+        self.calls.append(("load_chunk_to_temp", len(df)))
+
+    def check_temp_table_for_pk_duplicates(self, temp_table: str, schema: str, key_columns: list) -> tuple:
+        """Default: no duplicates found."""
+        return 0, []
+
+    def swap_temp_to_destination(self, temp_table: str, schema: str, dest_table: str, load_strategy: str) -> None:
+        self.calls.append(("swap_temp_to_destination", load_strategy))
+
+    def drop_temp_table(self, temp_table: str, schema: str) -> None:
+        pass
+
+    # ── metadata helpers ──────────────────────────────────────────────────────
 
     def get_table_columns(self, table_name: str):
         return []
@@ -63,6 +94,7 @@ def _settings(chunked: bool = True, chunk_size: int = 2):
         default_load_strategy="TRUNCATE",
         null_alert_threshold=0.9,
         enable_chunked_csv=chunked,
+        enable_chunked_parquet=True,
         ingest_chunk_size_rows=chunk_size,
         env_name="test",
     )
@@ -141,6 +173,118 @@ def test_chunked_csv_empty_file_truncate_reload_still_truncates() -> None:
 
     assert rows == 0
     assert sql.calls == [("truncate_and_load", 0)]
+
+
+def test_chunked_parquet_truncate_single_pass_uses_temp_then_swap() -> None:
+    """Single-pass Parquet: chunks go into a temp table, then one atomic swap to destination.
+
+    The old two-pass design called truncate_and_load + append_load.  The new design
+    calls load_chunk_to_temp for each chunk and swap_temp_to_destination once.
+    """
+    payload_df = pd.DataFrame({"id": [1, 2, 3], "value": ["a", "b", "c"]})
+    payload = payload_df.to_parquet(index=False)
+    sp = DummySharePointClient(payload)
+    sql = DummySqlClient()
+    settings = _settings(chunked=True, chunk_size=2)
+    settings.enable_chunked_parquet = True
+    engine = IngestionEngine(settings, sql, sp, logging.getLogger("test"))
+
+    rows = engine._process_single_file(_config("TRUNCATE"), "/folder/file.parquet", "file.parquet")
+
+    assert rows == 3
+    # Two chunks (rows 2 + 1) loaded into temp, then one atomic swap
+    assert sql.calls == [
+        ("load_chunk_to_temp", 2),
+        ("load_chunk_to_temp", 1),
+        ("swap_temp_to_destination", "TRUNCATE"),
+    ]
+    assert sp.moved_to == [("/folder/file.parquet", "/archive")]
+
+
+def test_non_chunked_parquet_append_strategy_loads_once() -> None:
+    payload_df = pd.DataFrame({"id": [1, 2, 3], "value": ["a", "b", "c"]})
+    payload = payload_df.to_parquet(index=False)
+    sp = DummySharePointClient(payload)
+    sql = DummySqlClient()
+    settings = _settings(chunked=False, chunk_size=2)
+    settings.enable_chunked_parquet = False
+    engine = IngestionEngine(settings, sql, sp, logging.getLogger("test"))
+
+    rows = engine._process_single_file(_config("APPEND"), "/folder/file.parquet", "file.parquet")
+
+    assert rows == 3
+    assert sql.calls == [("append_load", 3)]
+
+
+def test_chunked_parquet_schema_validation_aborts_before_destination_swap() -> None:
+    """Single-pass Parquet: validation issues are accumulated across all chunks in-flight.
+    After the pass, blocking errors abort before swap_temp_to_destination is called.
+
+    Note: load_chunk_to_temp IS called for every chunk (single-pass design loads into a
+    transient staging table simultaneously with validation), but the destination table
+    is never touched because the atomic swap is skipped on error.
+    """
+    payload_df = pd.DataFrame({"name": ["ok", "fit", "value-too-long-for-destination"]})
+    payload = payload_df.to_parquet(index=False)
+    sp = DummySharePointClient(payload)
+
+    class ValidatingSqlClient(DummySqlClient):
+        def get_table_columns(self, table_name: str):
+            return [
+                {
+                    "column_name": "name",
+                    "data_type": "nvarchar",
+                    "character_maximum_length": 5,
+                }
+            ]
+
+    sql = ValidatingSqlClient()
+    settings = _settings(chunked=True, chunk_size=2)
+    settings.enable_chunked_parquet = True
+    engine = IngestionEngine(settings, sql, sp, logging.getLogger("test"))
+
+    config = _config("TRUNCATE")
+    config.check_source_dest_columns = True
+
+    with pytest.raises(ValueError, match="Schema validation failed"):
+        engine._process_single_file(config, "/folder/file.parquet", "file.parquet")
+
+    # Destination table must NEVER be touched — swap is the only write to destination
+    assert not any(c[0] == "swap_temp_to_destination" for c in sql.calls), (
+        "swap_temp_to_destination must not be called when schema validation fails"
+    )
+    # Chunks were streamed into the temp table (single-pass design)
+    assert any(c[0] == "load_chunk_to_temp" for c in sql.calls), (
+        "load_chunk_to_temp should have been called for the chunks before validation failed"
+    )
+
+
+def test_chunked_parquet_append_pk_dup_check_fires_before_destination_swap() -> None:
+    """Single-pass Parquet APPEND: after loading all chunks to temp, the SQL-side PK
+    duplicate check fires.  If duplicates are found, the destination is never touched."""
+    payload_df = pd.DataFrame({"id": [1, 1, 2], "value": ["a", "b", "c"]})
+    payload = payload_df.to_parquet(index=False)
+    sp = DummySharePointClient(payload)
+
+    class DupDetectSqlClient(DummySqlClient):
+        def check_temp_table_for_pk_duplicates(self, temp_table: str, schema: str, key_columns: list) -> tuple:
+            # Simulate 2 duplicate rows found for key "id"
+            return 2, [{"id": 1}]
+
+    sql = DupDetectSqlClient()
+    settings = _settings(chunked=True, chunk_size=10)
+    settings.enable_chunked_parquet = True
+    engine = IngestionEngine(settings, sql, sp, logging.getLogger("test"))
+    config = _config("APPEND")  # merge_key_columns="id"
+
+    with pytest.raises(ValueError, match="PRIMARY_KEY_VIOLATION"):
+        engine._process_single_file(config, "/folder/file.parquet", "file.parquet")
+
+    # Temp received data but swap to destination never happened
+    assert any(c[0] == "load_chunk_to_temp" for c in sql.calls)
+    assert not any(c[0] == "swap_temp_to_destination" for c in sql.calls), (
+        "swap_temp_to_destination must not be called when duplicate keys are detected in temp table"
+    )
 
 
 def test_excel_datetime_column_parses_ddmmyyyy_and_mmddyyyy_to_datetime() -> None:
@@ -390,7 +534,8 @@ def test_non_chunked_file_logs_validation_and_import_progress(caplog: pytest.Log
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("validation progress: 100%" in m for m in messages)
-    assert any("import progress: 100%" in m for m in messages)
+    # Non-chunked path uses the "sql-ingestion" phase name for load progress
+    assert any("sql-ingestion progress: 100%" in m for m in messages)
 
 
 def test_chunked_file_logs_validation_and_import_progress(caplog: pytest.LogCaptureFixture) -> None:

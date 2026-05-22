@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import csv
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from openpyxl import load_workbook
 
 
@@ -16,8 +19,10 @@ def _ensure_dirs() -> dict[str, Path]:
     paths = {
         "valid_excel": OUTPUT_ROOT / "valid" / "excel",
         "valid_csv": OUTPUT_ROOT / "valid" / "csv",
+        "valid_parquet": OUTPUT_ROOT / "valid" / "parquet",
         "invalid_excel": OUTPUT_ROOT / "invalid" / "excel",
         "invalid_csv": OUTPUT_ROOT / "invalid" / "csv",
+        "invalid_parquet": OUTPUT_ROOT / "invalid" / "parquet",
     }
     for p in paths.values():
         p.mkdir(parents=True, exist_ok=True)
@@ -325,7 +330,9 @@ def generate_invalid_excel_files(invalid_excel_dir: Path, valid_excel_dir: Path)
     # 6) numeric precision/scale overflow scenarios (looks numeric but exceeds DECIMAL constraints)
     file_6 = invalid_excel_dir / "invalid_numeric_overflow.xlsx"
     overflow = base_au.head(3).copy()
-    overflow.loc[overflow.index[0], "CreditLimit"] = 123456.78
+    # precision overflow for DECIMAL(18,2): 19 total digits
+    overflow.loc[overflow.index[0], "CreditLimit"] = 1234567890123456789
+    # scale overflow for DECIMAL(*,2): 3 fractional digits
     overflow.loc[overflow.index[1], "CreditLimit"] = 123.456
     overflow.loc[overflow.index[2], "CreditLimit"] = 999.99
     with pd.ExcelWriter(file_6, engine="openpyxl") as writer:
@@ -333,15 +340,180 @@ def generate_invalid_excel_files(invalid_excel_dir: Path, valid_excel_dir: Path)
         base_us.head(3).to_excel(writer, sheet_name="Customers_US", index=False)
 
 
+def _build_parquet_batch(offset: int, count: int, total_columns: int) -> pd.DataFrame:
+    event_base = datetime(2025, 1, 1)
+    rows: dict[str, list] = {
+        "transaction_id": [f"TXN{offset + i:010d}" for i in range(count)],
+        "customer_id": [f"CUST{100000 + ((offset + i) % 200000):06d}" for i in range(count)],
+        "account_id": [f"ACC{50000 + ((offset + i) % 120000):06d}" for i in range(count)],
+        "merchant_id": [f"MER{7000 + ((offset + i) % 9000):05d}" for i in range(count)],
+        "transaction_date": [
+            (event_base + timedelta(days=(offset + i) % 365)).date().isoformat()
+            for i in range(count)
+        ],
+        "transaction_timestamp": [
+            f"{(event_base + timedelta(days=(offset + i) % 365)).date().isoformat()}T{((offset + i) % 24):02d}:{((offset + i) % 60):02d}:{(((offset + i) * 3) % 60):02d}"
+            for i in range(count)
+        ],
+        "amount": [round(100 + ((offset + i) % 10000) * 0.17, 2) for i in range(count)],
+        "tax_amount": [round(10 + ((offset + i) % 1000) * 0.02, 2) for i in range(count)],
+        "fee_amount": [round(1 + ((offset + i) % 500) * 0.01, 2) for i in range(count)],
+        "net_amount": [round(90 + ((offset + i) % 11000) * 0.15, 2) for i in range(count)],
+        "currency": ["AUD" if (offset + i) % 2 == 0 else "USD" for i in range(count)],
+        "status": ["COMPLETE" if (offset + i) % 10 != 0 else "PENDING" for i in range(count)],
+        "payment_method": ["CARD" if (offset + i) % 3 == 0 else "TRANSFER" for i in range(count)],
+        "channel": ["ONLINE" if (offset + i) % 4 == 0 else "BRANCH" for i in range(count)],
+        "country_code": ["AU" if (offset + i) % 2 == 0 else "US" for i in range(count)],
+        "region_code": [f"R{((offset + i) % 12) + 1:02d}" for i in range(count)],
+        "source_system": ["ERP" for _ in range(count)],
+        "batch_reference": [f"BATCH{((offset + i) // 10000) + 1:06d}" for i in range(count)],
+        "is_refund": [((offset + i) % 13 == 0) for i in range(count)],
+        "risk_score": [round(((offset + i) % 1000) / 1000, 4) for i in range(count)],
+        "device_id": [f"DEV{((offset + i) % 50000):05d}" for i in range(count)],
+        "description": [f"Parquet transaction row {offset + i}" for i in range(count)],
+    }
+
+    current_columns = len(rows)
+    if total_columns > current_columns:
+        for n in range(current_columns + 1, total_columns + 1):
+            rows[f"extra_col_{n:02d}"] = [f"X{n}_{(offset + i) % 1000:03d}" for i in range(count)]
+
+    return pd.DataFrame(rows)
+
+
+def generate_large_parquet_file(
+    valid_parquet_dir: Path,
+    *,
+    target_size_gb: float,
+    total_columns: int = 20,
+    rows_per_batch: int = 50_000,
+    filename: str | None = None,
+) -> Path:
+    if total_columns < 20:
+        raise ValueError("total_columns must be at least 20")
+
+    if target_size_gb <= 0:
+        raise ValueError("target_size_gb must be greater than zero")
+
+    resolved_filename = filename or f"valid_transactions_large_{str(target_size_gb).replace('.', '_')}gb.parquet"
+    file_path = valid_parquet_dir / resolved_filename
+
+    target_bytes = int(target_size_gb * 1024 * 1024 * 1024)
+    rows_written = 0
+
+    if file_path.exists():
+        file_path.unlink()
+
+    writer: pq.ParquetWriter | None = None
+    try:
+        while True:
+            frame = _build_parquet_batch(rows_written, rows_per_batch, total_columns)
+            table = pa.Table.from_pandas(frame, preserve_index=False)
+
+            if writer is None:
+                writer = pq.ParquetWriter(file_path, table.schema, compression="snappy")
+
+            writer.write_table(table, row_group_size=min(rows_per_batch, 50_000))
+            rows_written += len(frame)
+
+            current_size = file_path.stat().st_size if file_path.exists() else 0
+            if current_size >= target_bytes:
+                break
+
+            if rows_written % (rows_per_batch * 10) == 0:
+                print(
+                    f"Generating {file_path.name}: rows={rows_written:,}, "
+                    f"size={current_size / (1024 * 1024 * 1024):.2f} GB"
+                )
+    finally:
+        if writer is not None:
+            writer.close()
+
+    print(
+        f"Generated {file_path.name}: rows={rows_written:,}, "
+        f"size={file_path.stat().st_size / (1024 * 1024 * 1024):.2f} GB"
+    )
+    return file_path
+
+
+def generate_valid_parquet_files(valid_parquet_dir: Path) -> None:
+    valid_df = pd.DataFrame(
+        {
+            "transaction_id": ["PTX000001", "PTX000002", "PTX000003"],
+            "customer_id": ["CUST01001", "CUST01002", "CUST01003"],
+            "transaction_date": ["2025-01-15", "2025-01-16", "2025-01-17"],
+            "amount": [125.50, 88.10, 230.00],
+            "currency": ["AUD", "AUD", "USD"],
+            "status": ["COMPLETE", "COMPLETE", "PENDING"],
+            "source_system": ["ERP", "ERP", "ERP"],
+        }
+    )
+    valid_df.to_parquet(valid_parquet_dir / "valid_transactions_parquet_001.parquet", index=False)
+
+
+def generate_invalid_parquet_files(invalid_parquet_dir: Path) -> None:
+    # Deliberately includes an over-length status value on the final row so
+    # full-file chunked validation can detect an issue that appears after
+    # the first chunk.
+    invalid_df = pd.DataFrame(
+        {
+            "transaction_id": ["PTX900001", "PTX900002", "PTX900003"],
+            "customer_id": ["CUST09901", "CUST09902", "CUST09903"],
+            "transaction_date": ["2025-03-01", "2025-03-02", "2025-03-03"],
+            "amount": [40.25, 50.75, 60.10],
+            "currency": ["AUD", "USD", "AUD"],
+            "status": ["OK", "GOOD", "STATUS_VALUE_EXCEEDS_LIMIT"],
+            "source_system": ["ERP", "ERP", "ERP"],
+        }
+    )
+    invalid_df.to_parquet(invalid_parquet_dir / "invalid_transactions_parquet_001.parquet", index=False)
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate sample ingestion artifacts")
+    parser.add_argument(
+        "--large-parquet",
+        action="store_true",
+        help="Generate an additional large parquet artifact (opt-in)",
+    )
+    parser.add_argument(
+        "--target-size-gb",
+        type=float,
+        default=2.0,
+        help="Target parquet size in GB when --large-parquet is enabled",
+    )
+    parser.add_argument(
+        "--parquet-columns",
+        type=int,
+        default=20,
+        help="Total columns for generated large parquet artifact (minimum 20)",
+    )
+    parser.add_argument(
+        "--parquet-rows-per-batch",
+        type=int,
+        default=50_000,
+        help="Rows per batch while generating large parquet artifact",
+    )
+    args = parser.parse_args()
+
     paths = _ensure_dirs()
     legacy_datetime_csv = paths["invalid_csv"] / "invalid_datetime_stress.csv"
     if legacy_datetime_csv.exists():
         legacy_datetime_csv.unlink()
     generate_valid_excel_files(paths["valid_excel"])
     generate_valid_csv_files(paths["valid_csv"])
+    generate_valid_parquet_files(paths["valid_parquet"])
     generate_invalid_csv_files(paths["invalid_csv"], paths["valid_csv"])
     generate_invalid_excel_files(paths["invalid_excel"], paths["valid_excel"])
+    generate_invalid_parquet_files(paths["invalid_parquet"])
+
+    if args.large_parquet:
+        generate_large_parquet_file(
+            paths["valid_parquet"],
+            target_size_gb=args.target_size_gb,
+            total_columns=max(20, args.parquet_columns),
+            rows_per_batch=max(1_000, args.parquet_rows_per_batch),
+        )
 
     print(f"Sample artifacts generated under: {OUTPUT_ROOT}")
 

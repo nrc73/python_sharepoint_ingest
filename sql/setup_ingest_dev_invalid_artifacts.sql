@@ -308,6 +308,30 @@ BEGIN
 END
 GO
 
+IF OBJECT_ID('dbo.dest_invalid_parquet', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.dest_invalid_parquet (
+        transaction_id VARCHAR(20) NOT NULL,
+        customer_id VARCHAR(20) NULL,
+        transaction_date DATE NULL,
+        amount DECIMAL(18,2) NULL,
+        currency VARCHAR(10) NULL,
+        status VARCHAR(10) NULL,
+        source_system VARCHAR(50) NULL,
+        source_file_name VARCHAR(255) NULL,
+        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_dest_invalid_parquet PRIMARY KEY (transaction_id)
+    );
+END
+GO
+
+IF COL_LENGTH('dbo.dest_invalid_parquet', 'source_file_name') IS NULL
+BEGIN
+    ALTER TABLE dbo.dest_invalid_parquet ADD source_file_name VARCHAR(255) NULL;
+END
+GO
+
 IF OBJECT_ID('config.sharepoint_ingestion', 'U') IS NULL
 BEGIN
     RAISERROR('config.sharepoint_ingestion table does not exist. Run bootstrap first.', 16, 1);
@@ -544,5 +568,80 @@ WHEN NOT MATCHED THEN
         'APPEND',
         'customer_id,excel_tab_name',
         '{"CustomerId":"customer_id","CustomerName":"customer_name","SignupDate":"signup_date","CreditLimit":"credit_limit","IsActive":"is_active","RegionCode":"region_code","SourceSystem":"source_system"}'
+    );
+GO
+
+MERGE config.sharepoint_ingestion AS target
+USING (SELECT 'wf-invalid-parquet-all' AS workflow_id) AS source
+ON target.workflow_id = source.workflow_id
+WHEN MATCHED THEN
+    UPDATE SET
+        sharepoint_base_url = '{env:sharepoint_site_url}',
+        sharepoint_process_folder = '/Documents/invalid_parquet',
+        excel_tab_name = '',
+        sharepoint_process_archive_folder = '/Documents/invalid_parquet/Processed',
+        sharepoint_process_failed_folder = '/Documents/invalid_parquet/Failed',
+        process_frequency = 'OnDemand',
+        header_skip_rows = 0,
+        check_source_dest_columns = '1',
+        multi_file_ingest = '1',
+        error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
+        process_id = COALESCE(target.process_id, NEWID()),
+        staging_table_name = 'dbo.dest_invalid_parquet',
+        is_active = '1',
+        ingestion_scope = 'TEST',
+        ingestion_domain = 'sample_artifacts',
+        is_test_data = 1,
+        file_name_pattern = 'invalid_*parquet*.parquet',
+        load_strategy = 'APPEND',
+        merge_key_columns = 'transaction_id',
+        column_mapping_json = NULL,
+        sp_ingest_modified_utc = SYSUTCDATETIME()
+WHEN NOT MATCHED THEN
+    INSERT (
+        sharepoint_base_url,
+        sharepoint_process_folder,
+        excel_tab_name,
+        sharepoint_process_archive_folder,
+        sharepoint_process_failed_folder,
+        process_frequency,
+        header_skip_rows,
+        check_source_dest_columns,
+        multi_file_ingest,
+        error_notification_email_address,
+        process_id,
+        workflow_id,
+        staging_table_name,
+        is_active,
+        ingestion_scope,
+        ingestion_domain,
+        is_test_data,
+        file_name_pattern,
+        load_strategy,
+        merge_key_columns,
+        column_mapping_json
+    )
+    VALUES (
+        '{env:sharepoint_site_url}',
+        '/Documents/invalid_parquet',
+        '',
+        '/Documents/invalid_parquet/Processed',
+        '/Documents/invalid_parquet/Failed',
+        'OnDemand',
+        0,
+        '1',
+        '1',
+        'NathanChapman@company715.onmicrosoft.com',
+        NEWID(),
+        'wf-invalid-parquet-all',
+        'dbo.dest_invalid_parquet',
+        '1',
+        'TEST',
+        'sample_artifacts',
+        1,
+        'invalid_*parquet*.parquet',
+        'APPEND',
+        'transaction_id',
+        NULL
     );
 GO

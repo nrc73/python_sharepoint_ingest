@@ -16,9 +16,10 @@ For a consolidated catalog of validation families and notification routing, see
 3. [APPEND reload — primary key violation risks](#append-reload--primary-key-violation-risks)
 4. [Memory and process footprint](#memory-and-process-footprint)
 5. [SharePoint download throughput](#sharepoint-download-throughput)
-6. [Failure email — resource telemetry](#failure-email--resource-telemetry)
-7. [Diagnosing slow or hung runs](#diagnosing-slow-or-hung-runs)
-8. [Configuration reference](#configuration-reference)
+6. [Parquet range-read streaming](#parquet-range-read-streaming)
+7. [Failure email — resource telemetry](#failure-email--resource-telemetry)
+8. [Diagnosing slow or hung runs](#diagnosing-slow-or-hung-runs)
+9. [Configuration reference](#configuration-reference)
 
 ---
 
@@ -46,7 +47,8 @@ vectorises into a single server-side batch per chunk.
 > remaining cost is local Docker disk I/O and SQL transaction log writes.  
 > On production-grade SQL Server hardware (SSD-backed, properly sized log file, Simple
 > recovery model) expect **60–180 s** for the same 1M-row file.  
-> Enable `ENABLE_CHUNKED_CSV=true` to reduce peak RSS from ~720 MB to ~150 MB
+> Enable `ENABLE_CHUNKED_CSV=true` (and `ENABLE_CHUNKED_PARQUET=true` for parquet flows)
+> to reduce peak RSS from ~720 MB to ~150 MB
 > regardless of file size, at a small throughput cost.
 
 ### Notes on dormant merge implementation
@@ -228,13 +230,88 @@ included in failure notification emails.
 
 ## SharePoint download throughput
 
-- Files are downloaded in a single `requests` call via the Graph/REST API.
+### CSV and Excel files
+
+- Files are downloaded in a single `requests` call via the Graph/REST API into an
+  in-memory buffer before parsing.
 - Typical throughput: 5–30 MB/s depending on tenant throttling and proximity.
 - For very large files (>100 MB), the download itself may take 30–60 s and appear to
   hang.  Check the audit log `duration_seconds` vs. `rows_scanned` to determine whether
   the bottleneck is download or SQL insert.
 - Microsoft 429 (throttle) responses are retried automatically by the SharePoint client;
   excessive throttling can add minutes to large runs.
+
+### Parquet files
+
+Parquet files use **HTTP range-read streaming** — the file is **never fully downloaded**.
+See [Parquet range-read streaming](#parquet-range-read-streaming) for full details.
+
+---
+
+## Parquet range-read streaming (single-pass)
+
+Parquet files use a `SharePointRangeReader` backed by Microsoft Graph HTTP range
+requests.  The engine calls `get_file_item` once to obtain the file size and a
+pre-authenticated CDN URL, then PyArrow's `ParquetFile` fetches only the data it needs.
+
+### Single-pass pipeline (current design)
+
+Each row group is fetched **once** and runs through the full pipeline
+(transform → validate → stage) before the next row group is requested:
+
+| Step | HTTP requests | Data transferred |
+|---|---|---|
+| Open `ParquetFile` (footer read) | 2–3 | ~8–32 KB |
+| Per row group — transform + validate + `load_chunk_to_temp` | **1** | ~row-group size |
+| Final `swap_temp_to_destination` (SQL only) | 0 | — |
+
+For a 1 GB Parquet file with 478 row groups the full run makes **~481 range requests**
+and transfers the file data **once**.  The file is never held entirely in memory.
+
+**Compared to the previous two-pass design** (validate-all → then reload-all):
+
+| Metric | Old (two-pass) | Current (single-pass) |
+|---|---|---|
+| Range requests per row group | 2 | **1** |
+| Total data transferred | 2× file size | **1× file size** |
+| Per-row CPU (column-map + normalise) | 2× | **1×** |
+| Destination writes visible during run | Incremental (mid-run rows visible) | **Atomic (all-or-nothing)** |
+| Typical wall-clock saving (>100 MB) | — | **40–55 %** |
+
+The destination table is never written until the final `swap_temp_to_destination`
+transaction, so a validation failure or PK violation at any point leaves the destination
+completely unchanged.
+
+### Memory profile
+
+| Mode | Peak RSS |
+|---|---|
+| Non-chunked (all rows in one batch) | ~row-group size × parallelism |
+| Chunked (`ENABLE_CHUNKED_PARQUET=true`) | < `INGEST_CHUNK_SIZE_ROWS` × row width |
+
+With the default 5 000-row chunk size, peak RSS for a 1 GB Parquet file stays below
+**~150 MB** regardless of total row count.
+
+### Request rate and throttling
+
+Each range request is an authenticated Graph API call.  For very large files:
+
+- **Range request rate** is bounded by the row-group iteration speed, typically
+  1–5 requests/second for a standard SharePoint tenant.
+- **Microsoft 429 throttling** is handled by the SharePoint client with exponential
+  back-off; expect 5–15 s delays per throttled request.
+- If the CDN pre-auth URL (`@microsoft.graph.downloadUrl`) is available in the Graph
+  item metadata, the engine uses it directly — skipping re-authentication on each
+  request and significantly reducing per-request overhead.
+
+### Diagnosing slow Parquet runs
+
+| Symptom | Likely cause |
+|---|---|
+| Validation progress stalls at a fixed percentage | 429 throttle back-off on a large row group |
+| `duration_seconds` high, `memory_peak_mb` low | Normal for chunked range reads on large files |
+| Progress advances then stops completely | Network timeout; check SharePoint connectivity |
+| "I/O operation on closed file" error | `SharePointRangeReader` missing `closed` property — should not occur after v2.1 |
 
 ---
 
@@ -301,8 +378,9 @@ For a stuck process (Python alive, 0 CPU, not progressing):
 
 | `.env` variable | Default | Purpose |
 |---|---|---|
-| `ENABLE_CHUNKED_CSV` | `false` | Stream CSV in 50 000-row chunks instead of loading the whole file into memory |
-| `INGEST_CHUNK_SIZE_ROWS` | `50000` | Rows per chunk (only applies when `ENABLE_CHUNKED_CSV=true`) |
+| `ENABLE_CHUNKED_CSV` | `false` | Stream CSV in row chunks instead of loading the whole file into memory |
+| `ENABLE_CHUNKED_PARQUET` | `true` | Stream Parquet via Arrow record batches instead of loading full file into memory |
+| `INGEST_CHUNK_SIZE_ROWS` | `5000` | Rows per chunk (applies when chunked CSV/Parquet is enabled) |
 | `DEFAULT_LOAD_STRATEGY` | `TRUNCATE` | `TRUNCATE` or `APPEND` |
 | `NULL_ALERT_THRESHOLD` | `0.5` | Fraction of NULLs in a column before a validation warning is raised |
 
