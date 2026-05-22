@@ -1,5 +1,8 @@
 """One-shot helper: clear valid_parquet input + Processed + Failed folders, truncate dest table,
-upload the 1 GB parquet artifact using a Graph API resumable upload session.
+and upload the capped parquet artifact using a Graph API resumable upload session.
+
+Safety guard: this script enforces a hard maximum parquet artifact size of 250 MiB
+for dev ingestion runs.
 """
 from __future__ import annotations
 
@@ -20,6 +23,26 @@ from sharepoint_ingest.sharepoint_client import SharePointClient, _GRAPH_BASE
 from sharepoint_ingest.sql_client import SqlClient
 
 _CHUNK_SIZE = 60 * 1024 * 1024  # 60 MiB (must be multiple of 320 KiB)
+_MAX_PARQUET_SIZE_BYTES = 512 * 1024 * 1024  # 512 MiB hard cap (matches ingestion engine)
+
+
+def _upload_small_file_direct(
+    sp: SharePointClient,
+    drive_id: str,
+    folder_path: str,
+    file_name: str,
+    data: bytes,
+) -> None:
+    """Upload file in a single PUT for files <= 250 MiB."""
+    if folder_path in ("/", ""):
+        upload_url = f"{_GRAPH_BASE}/drives/{drive_id}/root:/{file_name}:/content"
+    else:
+        upload_url = f"{_GRAPH_BASE}/drives/{drive_id}/root:{folder_path}/{file_name}:/content"
+
+    headers = sp._auth_headers()
+    headers["Content-Type"] = "application/octet-stream"
+    resp = requests.put(upload_url, headers=headers, data=data, timeout=1800)
+    resp.raise_for_status()
 
 
 def _delete_files_in_folder(sp: SharePointClient, folder_url: str) -> None:
@@ -156,21 +179,42 @@ def main() -> int:
         PROJECT_ROOT
         / "tests"
         / "sample_artifacts"
-        / "valid"
-        / "parquet"
-        / "valid_transactions_parquet_001.parquet"
+        / "valid_transactions_parquet_5mb.parquet"
     )
+
+    local_size_bytes = local.stat().st_size
+    if local_size_bytes > _MAX_PARQUET_SIZE_BYTES:
+        current_mb = local_size_bytes / (1024 * 1024)
+        max_mb = _MAX_PARQUET_SIZE_BYTES / (1024 * 1024)
+        raise ValueError(
+            f"Refusing upload: {local.name} is {current_mb:.2f} MB, "
+            f"which exceeds the capped limit of {max_mb:.0f} MB. "
+            "Regenerate the artifact to <= 250 MB before rerunning."
+        )
+
     drive_id, folder_path = sp._server_url_to_drive_path(input_folder)
     size_gb = local.stat().st_size / (1024 ** 3)
-    print(f"Creating upload session for {local.name} ({size_gb:.2f} GB) ...")
-    upload_url = _create_upload_session(sp, drive_id, folder_path, local.name)
-
-    print(f"Uploading in {_CHUNK_SIZE // (1024 * 1024)} MiB chunks ...")
     with local.open("rb") as fh:
         data = fh.read()
 
-    _upload_in_chunks(upload_url, data)
-    print(f"Upload complete: {local.name} ({size_gb:.2f} GB)")
+    # Upload filename must match the workflow pattern: valid_transactions_parquet_*.parquet
+    upload_name = "valid_transactions_parquet_large.parquet"
+
+    # Files under 1 GiB are uploaded via a single request for stability.
+    # Keep resumable chunked mode as a fallback for larger artifacts.
+    if len(data) <= _MAX_PARQUET_SIZE_BYTES:
+        size_mb = len(data) / (1024 * 1024)
+        print(f"Uploading {local.name} as '{upload_name}' via resumable upload ({size_mb:.2f} MB) ...")
+        upload_url = _create_upload_session(sp, drive_id, folder_path, upload_name)
+        print(f"Uploading in {_CHUNK_SIZE // (1024 * 1024)} MiB chunks ...")
+        _upload_in_chunks(upload_url, data)
+    else:
+        print(f"Creating upload session for {local.name} ({size_gb:.2f} GB) ...")
+        upload_url = _create_upload_session(sp, drive_id, folder_path, upload_name)
+        print(f"Uploading in {_CHUNK_SIZE // (1024 * 1024)} MiB chunks ...")
+        _upload_in_chunks(upload_url, data)
+
+    print(f"Upload complete: {upload_name} ({size_gb:.2f} GB)")
     return 0
 
 

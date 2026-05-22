@@ -1,0 +1,18 @@
+# .cursorignore — files Cursor AI should exclude from indexing/context.
+# Mirrors .clineignore — both files should be kept in sync.
+
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+tests/sample_artifacts/
+logs/
+temp/
+src/
+docs/manual-spn-sharepoint-graph-setup-guide.html
+dist/
+build/
+*.egg-info/

@@ -171,6 +171,18 @@ BEGIN
 END
 GO
 
+IF COL_LENGTH('config.sharepoint_ingestion', 'is_validated') IS NULL
+BEGIN
+    ALTER TABLE config.sharepoint_ingestion ADD is_validated BIT NOT NULL CONSTRAINT DF_sharepoint_ingestion_is_validated DEFAULT 1;
+END
+GO
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'is_validated') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD is_validated BIT NULL;
+END
+GO
+
 IF COL_LENGTH('dbo.dest_transactions_large', 'source_file_name') IS NULL
 BEGIN
     ALTER TABLE dbo.dest_transactions_large ADD source_file_name VARCHAR(255) NULL;

@@ -79,6 +79,10 @@ BEGIN
 END
 GO
 
+IF COLUMNPROPERTY(OBJECT_ID('config.sharepoint_ingestion'), 'is_validated', 'ColumnId') IS NULL
+    ALTER TABLE config.sharepoint_ingestion ADD is_validated BIT NOT NULL DEFAULT 1;
+GO
+
 UPDATE config.sharepoint_ingestion
 SET ingestion_scope = CASE
         WHEN (is_test_data = 1 OR is_test_data = '1' OR is_test_data = 'Y' OR is_test_data = 'y') THEN 'TEST'
@@ -161,6 +165,10 @@ IF COL_LENGTH('log.sharepoint_ingestion_audit', 'is_test_data') IS NULL
 BEGIN
     ALTER TABLE log.sharepoint_ingestion_audit ADD is_test_data BIT NULL;
 END
+GO
+
+IF COLUMNPROPERTY(OBJECT_ID('log.sharepoint_ingestion_audit'), 'is_validated', 'ColumnId') IS NULL
+    ALTER TABLE log.sharepoint_ingestion_audit ADD is_validated BIT NULL;
 GO
 
 IF OBJECT_ID('dbo.sample_ingestion_target', 'U') IS NULL

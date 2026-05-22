@@ -1,0 +1,37 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .clineignore — files Cline (and other LLM coding agents) should deprioritise
+# or exclude from context when working on this codebase.
+#
+# RATIONALE: These are generated files, large binaries, or legacy shims that
+# add noise without providing value to the LLM's understanding of business
+# logic.  Canonical source lives in sharepoint_ingest/ — prefer that.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── virtual environment & byte-code ──────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# ── test / coverage artefacts ─────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+tests/sample_artifacts/
+
+# ── generated & transient logs ────────────────────────────────────────────────
+logs/
+temp/
+
+# ── legacy src/ shims ─────────────────────────────────────────────────────────
+# These are thin compatibility wrappers around sharepoint_ingest/.
+# Prefer reading the canonical implementation in sharepoint_ingest/.
+src/
+
+# ── large HTML docs ───────────────────────────────────────────────────────────
+docs/manual-spn-sharepoint-graph-setup-guide.html
+
+# ── build artefacts ───────────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/

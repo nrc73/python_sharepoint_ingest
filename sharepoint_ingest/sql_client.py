@@ -220,7 +220,6 @@ class SqlClient:
         BEGIN
             IF COL_LENGTH('log.sharepoint_ingestion_audit', 'batch_id') IS NOT NULL
                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_scope') IS NOT NULL
-               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_domain') IS NOT NULL
                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'is_test_data') IS NOT NULL
             BEGIN
                 INSERT INTO log.sharepoint_ingestion_audit (
@@ -457,12 +456,33 @@ class SqlClient:
         temp_q = f"{_quote_identifier(schema)}.{_quote_identifier(temp_table)}"
         dest_q = f"{_quote_identifier(schema)}.{_quote_identifier(destination_table)}"
 
+        # Build an explicit shared-column insert list to avoid SELECT * mismatches
+        # when destination has additional managed/audit columns with defaults.
+        dest_columns = [str(c["column_name"]) for c in self.get_table_columns(f"{schema}.{destination_table}")]
+        temp_columns = [str(c["column_name"]) for c in self.get_table_columns(f"{schema}.{temp_table}")]
+
+        temp_by_lower = {c.lower(): c for c in temp_columns}
+        common_columns = [c for c in dest_columns if c.lower() in temp_by_lower]
+
+        if not common_columns:
+            raise ValueError(
+                f"No common columns found between temp table '{schema}.{temp_table}' "
+                f"and destination table '{schema}.{destination_table}'."
+            )
+
+        insert_cols_q = ", ".join(_quote_identifier(c) for c in common_columns)
+
         try:
             with self._engine.begin() as conn:
                 if load_strategy == "TRUNCATE":
                     conn.execute(text(f"TRUNCATE TABLE {dest_q}"))
                 try:
-                    conn.execute(text(f"INSERT INTO {dest_q} SELECT * FROM {temp_q}"))
+                    conn.execute(
+                        text(
+                            f"INSERT INTO {dest_q} ({insert_cols_q}) "
+                            f"SELECT {insert_cols_q} FROM {temp_q}"
+                        )
+                    )
                 except SqlIntegrityError as exc:
                     raise ValueError(
                         f"PRIMARY_KEY_VIOLATION: Committing rows from staging temp table to "

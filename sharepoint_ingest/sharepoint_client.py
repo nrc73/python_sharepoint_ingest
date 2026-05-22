@@ -32,6 +32,12 @@ class SharePointFileItem:
     server_relative_url: str
 
 
+@dataclass
+class SharePointFolderItem:
+    name: str
+    server_relative_url: str
+
+
 class SharePointClient:
     """Authenticate to SharePoint Online using the **Microsoft Graph API**.
 
@@ -335,6 +341,38 @@ class SharePointClient:
 
         return result
 
+    def list_folders(self, folder_server_relative_url: str) -> list[SharePointFolderItem]:
+        """List all *sub-folders* directly inside the given folder.
+
+        Parameters
+        ----------
+        folder_server_relative_url:
+            SharePoint server-relative path to the folder, e.g.
+            ``/sites/data_ingest_dev/Shared Documents/IncomingFiles``
+        """
+        drive_id, path = self._server_url_to_drive_path(folder_server_relative_url)
+
+        if path in ("/", ""):
+            url = f"{_GRAPH_BASE}/drives/{drive_id}/root/children"
+        else:
+            url = f"{_GRAPH_BASE}/drives/{drive_id}/root:{path}:/children"
+
+        result: list[SharePointFolderItem] = []
+
+        # Follow @odata.nextLink pages (large libraries)
+        while url:
+            data = self._get_json(url)
+            for item in data.get("value", []):
+                if "folder" in item:  # skip files
+                    item_name: str = item["name"]
+                    item_url = f"{folder_server_relative_url.rstrip('/')}/{item_name}"
+                    result.append(
+                        SharePointFolderItem(name=item_name, server_relative_url=item_url)
+                    )
+            url = data.get("@odata.nextLink", "")  # empty string stops the loop
+
+        return result
+
     def get_file_count(self, folder_server_relative_url: str) -> int:
         return len(self.list_files(folder_server_relative_url))
 
@@ -345,6 +383,82 @@ class SharePointClient:
 
     def download_file_to_buffer(self, server_relative_url: str) -> BytesIO:
         return BytesIO(self.download_file_to_bytes(server_relative_url))
+
+    def folder_exists(self, folder_server_relative_url: str) -> bool:
+        """Return ``True`` if the folder exists on SharePoint, ``False`` otherwise.
+
+        Uses a lightweight HEAD-equivalent GET against the Graph drive item
+        endpoint and treats a 404 as "does not exist" without raising.
+        """
+        normalized = folder_server_relative_url.rstrip("/")
+        drive_id, path = self._server_url_to_drive_path(normalized)
+
+        # The library root always exists; no API call needed.
+        if path in ("", "/"):
+            return True
+
+        url = f"{_GRAPH_BASE}/drives/{drive_id}/root:{path}:"
+        response = _requests.get(url, headers=self._auth_headers(), timeout=30)
+        if response.status_code == 404:
+            return False
+        response.raise_for_status()
+        return "folder" in response.json()
+
+    def create_folder(self, folder_server_relative_url: str) -> None:
+        """Create a folder on SharePoint.
+
+        Only creates the final segment; the parent must already exist.
+        Treats a ``409 Conflict`` response as "already exists" so the call is
+        safe to retry (idempotent on the server side).
+        """
+        normalized = folder_server_relative_url.rstrip("/")
+        drive_id, path = self._server_url_to_drive_path(normalized)
+
+        path_stripped = path.strip("/")
+        if not path_stripped:
+            return  # nothing to do for the library root
+
+        parts = path_stripped.split("/")
+        folder_name = parts[-1]
+        parent_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
+
+        if parent_path in ("", "/"):
+            create_url = f"{_GRAPH_BASE}/drives/{drive_id}/root/children"
+        else:
+            create_url = f"{_GRAPH_BASE}/drives/{drive_id}/root:{parent_path}:/children"
+
+        headers = self._auth_headers()
+        headers["Content-Type"] = "application/json"
+        body = {
+            "name": folder_name,
+            "folder": {},
+            "@microsoft.graph.conflictBehavior": "fail",
+        }
+        response = _requests.post(create_url, headers=headers, json=body, timeout=30)
+        if response.status_code == 409:
+            # Already exists – treat as success (idempotent)
+            return
+        response.raise_for_status()
+
+    def ensure_folder(self, folder_server_relative_url: str) -> bool:
+        """Ensure *folder* exists on SharePoint, creating it if necessary.
+
+        Returns
+        -------
+        bool
+            ``True`` if the folder was **created** by this call.
+            ``False`` if it already existed.
+
+        This is the runtime equivalent of the ``_ensure_folder`` helper in
+        ``sharepoint_setup/provision_sharepoint_folders.py``.  It is safe to
+        call on every ingestion run — when the folder already exists the only
+        overhead is a single lightweight GET.
+        """
+        normalized = folder_server_relative_url.rstrip("/")
+        if self.folder_exists(normalized):
+            return False
+        self.create_folder(normalized)
+        return True
 
     def move_file(
         self,

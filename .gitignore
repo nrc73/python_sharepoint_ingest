@@ -19,5 +19,3 @@ build/
 # Generated test artifacts — regenerate locally with: python tools/generate_sample_artifacts.py
 tests/sample_artifacts/
 
-# Stray shell artifacts
-=
