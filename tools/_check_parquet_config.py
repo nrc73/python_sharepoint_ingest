@@ -1,29 +1,23 @@
 """Quick check of the parquet workflow config row."""
-import os
-import pyodbc
-from dotenv import load_dotenv
 
-load_dotenv()
+from sharepoint_ingest.config import load_settings
+from sharepoint_ingest.sql_client import SqlClient
 
-conn_str = (
-    f"DRIVER={{{os.getenv('SQL_ODBC_DRIVER', 'ODBC Driver 18 for SQL Server')}}};"
-    f"SERVER={os.getenv('SQL_SERVER_HOST', 'localhost')},{os.getenv('SQL_SERVER_PORT', '1433')};"
-    f"DATABASE={os.getenv('SQL_DATABASE_DEV', 'ingest_dev')};"
-    f"UID={os.getenv('SQL_SERVER_USERNAME')};PWD={os.getenv('SQL_SERVER_PASSWORD')};"
-    "TrustServerCertificate=yes;Encrypt=yes;"
+settings = load_settings(env_override="dev")
+sql = SqlClient(settings.sql)
+
+rows = sql.query_rows(
+    """
+    SELECT workflow_id, check_source_dest_columns, load_strategy
+    FROM config.sharepoint_ingestion
+    WHERE workflow_id = 'wf-valid-transactions-parquet'
+    """
 )
 
-with pyodbc.connect(conn_str) as conn:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT workflow_id, check_source_dest_columns, load_strategy "
-        "FROM config.sharepoint_ingestion "
-        "WHERE workflow_id = 'wf-valid-transactions-parquet'"
-    )
-    row = cur.fetchone()
-    if row:
-        print(f"workflow_id              : {row[0]}")
-        print(f"check_source_dest_columns: {row[1]}")
-        print(f"load_strategy            : {row[2]}")
-    else:
-        print("No row found")
+if rows:
+    row = rows[0]
+    print(f"workflow_id              : {row['workflow_id']}")
+    print(f"check_source_dest_columns: {row['check_source_dest_columns']}")
+    print(f"load_strategy            : {row['load_strategy']}")
+else:
+    print("No row found")

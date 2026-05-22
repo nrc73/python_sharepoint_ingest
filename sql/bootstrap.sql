@@ -7,6 +7,13 @@ GO
 USE ingest_prod;
 GO
 
+IF DB_NAME() <> 'ingest_prod'
+BEGIN
+    RAISERROR('Guard rail violation: sql/bootstrap.sql must be executed against ingest_prod only.', 16, 1);
+    RETURN;
+END
+GO
+
 IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'config')
 BEGIN
     EXEC('CREATE SCHEMA [config] AUTHORIZATION [dbo]');
@@ -17,6 +24,32 @@ IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'log')
 BEGIN
     EXEC('CREATE SCHEMA [log] AUTHORIZATION [dbo]');
 END
+GO
+
+IF OBJECT_ID('config.environment_policy', 'U') IS NULL
+BEGIN
+    CREATE TABLE config.environment_policy (
+        environment_name VARCHAR(20) NOT NULL PRIMARY KEY,
+        block_test_data_in_prod BIT NOT NULL,
+        updated_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+    );
+END
+GO
+
+MERGE config.environment_policy AS target
+USING (
+    SELECT
+        CAST('PROD' AS VARCHAR(20)) AS environment_name,
+        CAST(1 AS BIT) AS block_test_data_in_prod
+) AS source
+ON target.environment_name = source.environment_name
+WHEN MATCHED THEN
+    UPDATE SET
+        block_test_data_in_prod = source.block_test_data_in_prod,
+        updated_utc = SYSUTCDATETIME()
+WHEN NOT MATCHED THEN
+    INSERT (environment_name, block_test_data_in_prod)
+    VALUES (source.environment_name, source.block_test_data_in_prod);
 GO
 
 IF OBJECT_ID('config.sharepoint_ingestion', 'U') IS NULL
@@ -248,5 +281,39 @@ BEGIN
         'business_key',
         '{"BusinessKey":"business_key","Name":"name","Amount":"amount","EffectiveDate":"effective_date"}'
     );
+END
+GO
+
+CREATE OR ALTER TRIGGER config.trg_guard_prod_sharepoint_ingestion
+ON config.sharepoint_ingestion
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @block_test_data BIT = 0;
+
+    SELECT @block_test_data = CAST(block_test_data_in_prod AS BIT)
+    FROM config.environment_policy
+    WHERE environment_name = 'PROD';
+
+    IF @block_test_data = 1
+       AND EXISTS (
+           SELECT 1
+           FROM inserted i
+           WHERE
+               ISNULL(i.is_test_data, 0) = 1
+               OR UPPER(LTRIM(RTRIM(ISNULL(i.ingestion_scope, 'REAL')))) IN ('TEST', 'VALIDATION', 'PERF_TEST')
+               OR UPPER(LTRIM(RTRIM(ISNULL(i.ingestion_domain, '')))) = 'SAMPLE_ARTIFACTS'
+       )
+    BEGIN
+        RAISERROR(
+            'Guard rail violation: TEST/VALIDATION/PERF_TEST or sample_artifacts config rows are blocked in PROD (config.sharepoint_ingestion).',
+            16,
+            1
+        );
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END
 END
 GO

@@ -1,17 +1,9 @@
 """One-off: apply column_mapping_json for wf-valid-transactions-parquet."""
-import os
-import pyodbc
-from dotenv import load_dotenv
 
-load_dotenv()
+from sqlalchemy import text
 
-conn_str = (
-    f"DRIVER={{{os.getenv('SQL_ODBC_DRIVER', 'ODBC Driver 18 for SQL Server')}}};"
-    f"SERVER={os.getenv('SQL_SERVER_HOST', 'localhost')},{os.getenv('SQL_SERVER_PORT', '1433')};"
-    f"DATABASE={os.getenv('SQL_DATABASE_DEV', 'ingest_dev')};"
-    f"UID={os.getenv('SQL_SERVER_USERNAME')};PWD={os.getenv('SQL_SERVER_PASSWORD')};"
-    "TrustServerCertificate=yes;Encrypt=yes;"
-)
+from sharepoint_ingest.config import load_settings
+from sharepoint_ingest.sql_client import SqlClient
 
 MAPPING = (
     '{"TransactionId":"transaction_id",'
@@ -23,26 +15,35 @@ MAPPING = (
     '"SourceSystem":"source_system"}'
 )
 
-with pyodbc.connect(conn_str) as conn:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE config.sharepoint_ingestion
-        SET    column_mapping_json    = ?,
-               sp_ingest_modified_utc = SYSUTCDATETIME()
-        WHERE  workflow_id = ?
-        """,
-        (MAPPING, "wf-valid-transactions-parquet"),
-    )
-    conn.commit()
-    print(f"Rows updated: {cur.rowcount}")
+settings = load_settings(env_override="dev")
+sql = SqlClient(settings.sql)
 
-    cur.execute(
-        "SELECT workflow_id, column_mapping_json "
-        "FROM config.sharepoint_ingestion "
-        "WHERE workflow_id = ?",
-        ("wf-valid-transactions-parquet",),
+with sql.engine.begin() as conn:
+    result = conn.execute(
+        text(
+            """
+            UPDATE config.sharepoint_ingestion
+            SET column_mapping_json = :mapping,
+                sp_ingest_modified_utc = SYSUTCDATETIME()
+            WHERE workflow_id = :workflow_id
+            """
+        ),
+        {"mapping": MAPPING, "workflow_id": "wf-valid-transactions-parquet"},
     )
-    row = cur.fetchone()
-    print(f"workflow_id       : {row[0]}")
-    print(f"column_mapping_json: {row[1]}")
+    print(f"Rows updated: {result.rowcount}")
+
+rows = sql.query_rows(
+    """
+    SELECT workflow_id, column_mapping_json
+    FROM config.sharepoint_ingestion
+    WHERE workflow_id = :workflow_id
+    """,
+    {"workflow_id": "wf-valid-transactions-parquet"},
+)
+
+if rows:
+    row = rows[0]
+    print(f"workflow_id       : {row['workflow_id']}")
+    print(f"column_mapping_json: {row['column_mapping_json']}")
+else:
+    print("workflow row not found")

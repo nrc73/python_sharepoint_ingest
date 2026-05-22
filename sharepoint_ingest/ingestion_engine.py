@@ -233,6 +233,30 @@ class IngestionEngine:
     def _resolve_sharepoint_folder(self, configured_folder: Optional[str]) -> Optional[str]:
         return self._resolve_sharepoint_value(configured_folder, treat_as_path=True)
 
+    def _enforce_prod_data_guard(self, configs: list[IngestionConfig]) -> None:
+        env_name = str(getattr(self.settings, "env_name", "") or "").strip().lower()
+        allow_test_data = bool(getattr(self.settings, "allow_test_data_in_prod", False))
+
+        if env_name != "prod" or allow_test_data:
+            return
+
+        violating = []
+        for cfg in configs:
+            scope = str(cfg.ingestion_scope or "REAL").strip().upper()
+            if not scope:
+                scope = "TEST" if cfg.test_data_enabled else "REAL"
+
+            if cfg.test_data_enabled or scope in {"TEST", "VALIDATION", "PERF_TEST"}:
+                violating.append(f"id={cfg.id},workflow_id={cfg.workflow_id},scope={scope},is_test_data={cfg.test_data_enabled}")
+
+        if violating:
+            joined = "; ".join(violating)
+            raise ValueError(
+                "Guard rail violation: prod runtime selected test/validation configs. "
+                "Remove these rows from prod or set ALLOW_TEST_DATA_IN_PROD=1 for a break-glass run. "
+                f"Violations: {joined}"
+            )
+
     # ── top-level run / config loop ───────────────────────────────────────────
 
     def run(
@@ -248,6 +272,7 @@ class IngestionEngine:
             ingestion_scope=ingestion_scope,
             active_only=not include_inactive,
         )
+        self._enforce_prod_data_guard(configs)
         summary = IngestionSummary(process_id=process_id, workflow_id=workflow_id)
         self.logger.info("Loaded %s ingestion config row(s)", len(configs))
         for config in configs:
@@ -1050,4 +1075,5 @@ class IngestionEngine:
     ) -> Optional[str]:
         """Delegate to :func:`~sharepoint_ingest.ingestion._notification_helpers.extract_sheet_name_from_issues`."""
         return extract_sheet_name_from_issues(issues)
+
 

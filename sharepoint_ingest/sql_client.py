@@ -16,6 +16,58 @@ from sharepoint_ingest.config import SqlSettings
 from sharepoint_ingest.models import IngestionConfig
 
 
+INTEGRATED_AUTH_MODES = {
+    "windows",
+    "integrated",
+    "sspi",
+    "trusted_connection",
+    "ad_integrated",
+    "active_directory_integrated",
+}
+
+PASSWORDLESS_TOKEN_AUTH_MODES = {
+    "managed_identity",
+}
+
+PASSWORD_AUTH_MODES = {
+    "sql_password",
+    "ad_password",
+    "active_directory_password",
+    "aad_password",
+}
+
+SUPPORTED_AUTH_MODES = (
+    INTEGRATED_AUTH_MODES | PASSWORDLESS_TOKEN_AUTH_MODES | PASSWORD_AUTH_MODES
+)
+
+
+def normalize_sql_auth_mode(auth_mode: Optional[str]) -> str:
+    return (auth_mode or "sql_password").strip().lower()
+
+
+def is_integrated_auth_mode(auth_mode: Optional[str]) -> bool:
+    return normalize_sql_auth_mode(auth_mode) in INTEGRATED_AUTH_MODES
+
+
+def _format_server_endpoint(host: str, port: int, *, integrated_auth: bool) -> str:
+    normalized_host = (host or "").strip()
+    if not normalized_host:
+        normalized_host = "."
+
+    # For local/default-instance integrated auth on Windows, omitting the TCP port
+    # lets SQL Native Client/ODBC use the native endpoint resolution (shared
+    # memory / named pipes), which is more reliable than forcing TCP :1433.
+    local_markers = {".", "(local)", "localhost"}
+    if integrated_auth and normalized_host.lower() in local_markers:
+        return normalized_host
+
+    if "\\" in normalized_host:
+        # Named instance already encoded in host (e.g., MACHINE\SQLEXPRESS)
+        return normalized_host
+
+    return f"{normalized_host},{port}"
+
+
 def _quote_identifier(name: str) -> str:
     return "[" + name.replace("]", "]]" ) + "]"
 
@@ -38,24 +90,45 @@ class SqlClient:
         driver = settings.odbc_driver
         trust_cert = "yes" if settings.trust_server_certificate else "no"
 
-        auth_mode = (settings.auth_mode or "sql_password").strip().lower()
+        auth_mode = normalize_sql_auth_mode(settings.auth_mode)
+        if auth_mode not in SUPPORTED_AUTH_MODES:
+            supported = ", ".join(sorted(SUPPORTED_AUTH_MODES))
+            raise ValueError(
+                f"Unsupported SQL auth mode '{settings.auth_mode}'. Supported values: {supported}"
+            )
+
         query_params = {
             "driver": driver,
             "TrustServerCertificate": trust_cert,
         }
 
-        if auth_mode in {"ad_integrated", "integrated", "sspi", "trusted_connection", "active_directory_integrated"}:
+        server_endpoint = _format_server_endpoint(
+            settings.host,
+            settings.port,
+            integrated_auth=is_integrated_auth_mode(auth_mode),
+        )
+
+        if is_integrated_auth_mode(auth_mode):
             query_params["Trusted_Connection"] = "yes"
             query_string = urlencode(query_params)
             conn_str = (
-                f"mssql+pyodbc://@{settings.host}:{settings.port}/"
+                f"mssql+pyodbc://@{server_endpoint}/"
+                f"{settings.database}?{query_string}"
+            )
+            return create_engine(conn_str, fast_executemany=True, future=True)
+
+        if auth_mode in PASSWORDLESS_TOKEN_AUTH_MODES:
+            query_params["Authentication"] = "ActiveDirectoryMsi"
+            query_string = urlencode(query_params)
+            conn_str = (
+                f"mssql+pyodbc://@{server_endpoint}/"
                 f"{settings.database}?{query_string}"
             )
             return create_engine(conn_str, fast_executemany=True, future=True)
 
         if not settings.username or not settings.password:
             raise ValueError(
-                "SQL username/password are required for SQL password or AD password auth modes"
+                "SQL username/password are required for credential-based auth modes"
             )
 
         username = quote_plus(settings.username)
@@ -66,7 +139,7 @@ class SqlClient:
 
         query_string = urlencode(query_params)
         conn_str = (
-            f"mssql+pyodbc://{username}:{password}@{settings.host}:{settings.port}/"
+            f"mssql+pyodbc://{username}:{password}@{server_endpoint}/"
             f"{settings.database}?{query_string}"
         )
         return create_engine(conn_str, fast_executemany=True, future=True)

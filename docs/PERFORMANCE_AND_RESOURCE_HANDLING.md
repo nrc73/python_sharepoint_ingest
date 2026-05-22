@@ -37,14 +37,14 @@ and **bypasses** pyodbc's `fast_executemany=True` engine setting.  Switching to
 `method=None` lets SQLAlchemy call `cursor.executemany()` instead, which pyodbc
 vectorises into a single server-side batch per chunk.
 
-### Observed impact (dev environment — SQL Server in local Docker)
+### Observed impact (dev environment — local SQL Server)
 
 | File | Rows | Old duration | Current duration | Peak RSS |
 |---|---|---|---|---|
 | `valid_transactions_large.csv` | 1 000 000 | ~850 s (~14 min) | ~572 s (~9.5 min) | 719 MB |
 
 > The 33% improvement is due purely to the `fast_executemany` path change; the dominant
-> remaining cost is local Docker disk I/O and SQL transaction log writes.  
+> remaining cost is local SQL disk I/O and SQL transaction log writes.  
 > On production-grade SQL Server hardware (SSD-backed, properly sized log file, Simple
 > recovery model) expect **60–180 s** for the same 1M-row file.  
 > Enable `ENABLE_CHUNKED_CSV=true` (and `ENABLE_CHUNKED_PARQUET=true` for parquet flows)

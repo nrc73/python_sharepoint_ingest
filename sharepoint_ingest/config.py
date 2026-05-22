@@ -59,6 +59,7 @@ class EmailSettings:
 class AppSettings:
     env_name: str
     log_level: str
+    allow_test_data_in_prod: bool
     default_load_strategy: str
     default_file_pattern: str
     null_alert_threshold: float
@@ -186,6 +187,7 @@ def load_settings(env_override: Optional[str] = None) -> AppSettings:
     return AppSettings(
         env_name=env_name,
         log_level=os.getenv("LOG_LEVEL", "INFO"),
+        allow_test_data_in_prod=_as_bool(os.getenv("ALLOW_TEST_DATA_IN_PROD"), default=False),
         default_load_strategy=os.getenv("DEFAULT_LOAD_STRATEGY", "TRUNCATE"),
         default_file_pattern=os.getenv("DEFAULT_FILE_PATTERN", "*"),
         null_alert_threshold=float(os.getenv("NULL_ALERT_THRESHOLD", "0.90")),

@@ -12,7 +12,24 @@ from sharepoint_ingest.ingestion_engine import IngestionEngine
 from sharepoint_ingest.keyvault_client import maybe_build_provider
 from sharepoint_ingest.logging_utils import configure_logging
 from sharepoint_ingest.sharepoint_client import SharePointClient
-from sharepoint_ingest.sql_client import SqlClient
+from sharepoint_ingest.sql_client import SqlClient, is_integrated_auth_mode
+
+
+PROD_BLOCKED_SCOPES = {"test", "validation", "perf_test", "all"}
+
+
+def _validate_prod_guard_rails(settings, ingestion_scope: str) -> None:
+    normalized_scope = (ingestion_scope or "real").strip().lower()
+    if settings.env_name != "prod":
+        return
+    if settings.allow_test_data_in_prod:
+        return
+    if normalized_scope in PROD_BLOCKED_SCOPES:
+        raise ValueError(
+            "Guard rail violation: non-real ingestion scopes are blocked in prod "
+            "(test/validation/perf_test/all). Set ALLOW_TEST_DATA_IN_PROD=1 only for "
+            "explicit break-glass scenarios."
+        )
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -65,9 +82,9 @@ def _resolve_sharepoint_credentials(settings, provider=None) -> tuple[str, str, 
 
 def _resolve_sql_settings(settings, provider=None):
     sql_settings = settings.sql
-    auth_mode = (sql_settings.auth_mode or "sql_password").strip().lower()
+    auth_mode = sql_settings.auth_mode
 
-    if auth_mode in {"ad_integrated", "integrated", "sspi", "trusted_connection", "active_directory_integrated"}:
+    if is_integrated_auth_mode(auth_mode):
         return sql_settings
 
     provider = provider or maybe_build_provider(settings.key_vault)
@@ -94,6 +111,7 @@ def run(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     settings = load_settings(env_override=args.env)
+    _validate_prod_guard_rails(settings, args.ingestion_scope)
     log_level = "DEBUG" if args.verbose else settings.log_level
     logger = configure_logging(log_level)
 

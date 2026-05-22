@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from sharepoint_ingest.config import load_settings
 from sharepoint_ingest.keyvault_client import maybe_build_provider
-from sharepoint_ingest.sql_client import SqlClient
+from sharepoint_ingest.sql_client import SqlClient, is_integrated_auth_mode
 
 
 SUPPORTED_ENVIRONMENTS = ("dev", "prod")
@@ -31,9 +31,9 @@ def _resolve_target_envs(env_arg: str) -> list[str]:
 def _run_for_env(env_name: str) -> None:
     settings = load_settings(env_override=env_name)
     sql_settings = settings.sql
-    auth_mode = (sql_settings.auth_mode or "sql_password").strip().lower()
+    auth_mode = sql_settings.auth_mode
 
-    if auth_mode not in {"ad_integrated", "integrated", "sspi", "trusted_connection", "active_directory_integrated"}:
+    if not is_integrated_auth_mode(auth_mode):
         provider = maybe_build_provider(settings.key_vault)
         if provider is not None:
             username, password = provider.get_sql_credentials(env_name)

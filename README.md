@@ -144,11 +144,10 @@ This bootstrap command will:
 - validate that `KEY_VAULT_URL` is present and non-empty
 - leave existing `.env` unchanged
 
-3) Start local SQL container
+3) Ensure local SQL Server is running
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\sharepoint_setup\create_sql_container.ps1
-```
+- Use your desktop SQL Server instance (default or named instance).
+- Recommended local host setting in `.env`: `SQL_SERVER_HOST=.`
 
 4) Bootstrap SQL schema
 
@@ -156,12 +155,34 @@ powershell -ExecutionPolicy Bypass -File .\sharepoint_setup\create_sql_container
 python sharepoint_setup\bootstrap_sql_schema.py --env prod
 ```
 
-5) Validate setup
+> Guard rails: `sql/bootstrap.sql` now enforces PROD-only execution and blocks
+> insertion/update of `TEST` / `VALIDATION` / `PERF_TEST` / `sample_artifacts`
+> config rows in `config.sharepoint_ingestion`.
+
+5) Validate production guard rails (recommended DevOps preflight gate)
+
+```powershell
+python tools\validate_prod_guardrails.py --env prod
+```
+
+This command exits non-zero when test/sample config rows are present in prod.
+
+6) Apply sample artifact config scripts in DEV only
+
+```powershell
+python sharepoint_setup\bootstrap_sql_schema.py --env dev --script sql/setup_ingest_dev_valid_artifacts.sql
+python sharepoint_setup\bootstrap_sql_schema.py --env dev --script sql/setup_ingest_dev_invalid_artifacts.sql
+```
+
+Both scripts now fail fast if executed against any database other than
+`ingest_dev`.
+
+7) Validate setup
 
 ```powershell
 python sharepoint_setup\keyvault_secret_test.py --env prod
 python sharepoint_setup\sql_connection_test.py --env prod
-python sharepoint_setup\sharepoint_auth_test.py --env prod --folder "/sites/data_ingestion_prod/General/Input for ETL"
+python sharepoint_setup\sharepoint_auth_test.py --env prod --folder "/sites/data_ingestion_prod/Documents"
 ```
 
 ---

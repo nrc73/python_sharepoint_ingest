@@ -7,6 +7,13 @@ GO
 USE ingest_dev;
 GO
 
+IF DB_NAME() <> 'ingest_dev'
+BEGIN
+    RAISERROR('Guard rail violation: sql/setup_ingest_dev_valid_artifacts.sql must be executed against ingest_dev only.', 16, 1);
+    RETURN;
+END
+GO
+
 IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'config')
 BEGIN
     EXEC('CREATE SCHEMA [config] AUTHORIZATION [dbo]');

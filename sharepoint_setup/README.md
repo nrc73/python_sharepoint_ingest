@@ -2,46 +2,55 @@
 
 This folder contains setup and validation assets for:
 
-- local SQL Server 2022 Developer container (Docker Desktop)
+- local SQL Server (Windows-installed instance) as the primary dev host
 - Azure Key Vault secret setup/validation for SharePoint credentials
 - SharePoint app-permission connectivity testing
 
 ## Prerequisites
 
-1. Docker Desktop installed and running
+1. SQL Server installed locally (default instance or named instance)
 2. Python virtual environment with `requirements.txt` installed
 3. Azure CLI authenticated (`az login`)
 4. Rights to create/update app registrations in Entra
 5. SharePoint admin access to grant site permissions with PnP PowerShell
 
-## 1) Start local SQL container (SSMS-accessible, persistent)
+## 1) Preferred local SQL target (Windows SQL Server + SSPI)
 
-Use PowerShell:
+For home/dev setups, use Windows Integrated auth against the local SQL instance.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\sharepoint_setup\create_sql_container.ps1
+Recommended `.env` settings:
+
+```dotenv
+SQL_SERVER_HOST=.
+SQL_SERVER_HOST_DEV=.
+SQL_AUTH_MODE_DEV=sspi
+SQL_DATABASE_DEV=ingest_dev
+
+SQL_SERVER_HOST_PROD=your-prod-sql-server.database.windows.net
+SQL_AUTH_MODE_PROD=sspi
+SQL_DATABASE_PROD=ingest_prod
 ```
 
-The startup script now:
+This aligns with a common mixed setup:
 
-- mounts a Docker volume (`sql2022-ingest-data`) for persistence
-- ensures both databases exist: `ingest_dev`, `ingest_prod`
-- ensures required ingestion tables exist in both databases
+- **dev** runs under a regular AD/Windows user (current interactive identity)
+- **prod** runs under a Windows service account (service/scheduler runtime identity)
 
-To drop all existing user databases and recreate only the expected dev/prod set:
+For integrated auth modes (`windows` / `sspi` / `trusted_connection` /
+`ad_integrated` / `active_directory_integrated`), SQL identity is the Windows account
+running the Python process.
+
+If prod instead uses explicit credentials, set `SQL_AUTH_MODE_PROD=ad_password` and
+configure the prod SQL credential secret names in Key Vault.
+
+Validate:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\sharepoint_setup\create_sql_container.ps1 -ResetUserDatabases
+python sharepoint_setup\sql_connection_test.py --env all
 ```
 
-Default connectivity configured:
-
-- Server in SSMS: `localhost,1433`
-- Authentication: `SQL Server Authentication`
-- Login: `sa`
-- Password: from `SA_PASSWORD` parameter or `.env`
-
-The script publishes port 1433 and initializes databases `ingest_dev` and `ingest_prod`.
+Ensure your local SQL instance includes `ingest_dev` and `ingest_prod`.
+If needed, create both databases in SSMS and run `bootstrap_sql_schema.py` for each environment.
 
 ## 2) Initialize SQL schema
 
@@ -208,15 +217,20 @@ Use `--env all` to validate both environments in one run.
 
 The SQL test now reports:
 
-- resolved auth mode (`sql_password`, `ad_password`, or `ad_integrated`)
+- resolved auth mode (for example `sql_password`, `ad_password`, `active_directory_password`,
+  `windows`, `sspi`, `trusted_connection`, `ad_integrated`, `active_directory_integrated`,
+  or `managed_identity`)
 - effective SQL login (`SUSER_SNAME()` / `ORIGINAL_LOGIN()`)
+
+For Windows/local mode you should normally see your desktop identity (for example
+`DESKTOP-UAOR3B4\User`) as the effective login.
 
 This helps confirm the assumed credentials are actually being used.
 
 ## 5) Validate SharePoint app connectivity
 
 ```bash
-python sharepoint_setup/sharepoint_auth_test.py --env prod --folder "/sites/data_ingestion_prod/General/Input for ETL"
+python sharepoint_setup/sharepoint_auth_test.py --env prod --folder "/sites/data_ingestion_prod/Documents"
 ```
 
 For all-environment checks, either:
@@ -350,7 +364,6 @@ sql/configure_local_dbmail_profile.sql
 
 Important SMTP host value:
 
-- SQL Server in Docker: `host.docker.internal`
 - SQL Server on Windows host: `localhost`
 
 Finally run Layer 5 test:
@@ -367,9 +380,8 @@ http://localhost:5000
 
 ## Notes on SSMS access
 
-- If SSMS cannot connect, verify Docker container is running and port `1433` is published.
-- If another SQL instance uses 1433, update host port mapping in the script and connect using `localhost,<new_port>`.
-- If using ODBC 18, trust server certificate for local container (`TrustServerCertificate=yes`).
+- If SSMS cannot connect, verify the SQL Server service is running.
+- If using ODBC 18 for local SQL, `TrustServerCertificate=yes` can simplify local TLS behavior.
 - To verify SQL from Python side, run `python sharepoint_setup/sql_connection_test.py --env prod`.
 
 ---

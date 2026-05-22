@@ -6,9 +6,7 @@ Runs in regular SSMS query mode (no sqlcmd :setvar required).
 Before running:
 1) Start smtp4dev (PowerShell):
      powershell -ExecutionPolicy Bypass -File .\sharepoint_setup\create_local_smtp4dev.ps1
-2) Set @SmtpServer based on SQL Server location:
-   - SQL Server in Docker      => host.docker.internal
-   - SQL Server on Windows host => localhost
+2) Use localhost SMTP endpoint for desktop SQL Server.
 */
 
 USE [msdb];
@@ -20,7 +18,7 @@ DECLARE @Description NVARCHAR(255) = N'Local smtp4dev profile for SharePoint ing
 DECLARE @EmailAddress NVARCHAR(320) = N'sharepoint-ingest-dev@localhost';
 DECLARE @ReplyToAddress NVARCHAR(320) = N'sharepoint-ingest-dev@localhost';
 DECLARE @DisplayName NVARCHAR(128) = N'SharePoint Ingest Dev';
-DECLARE @SmtpServer NVARCHAR(255) = N'host.docker.internal';
+DECLARE @SmtpServer NVARCHAR(255) = N'localhost';
 DECLARE @SmtpPort INT = 2525;
 DECLARE @TestRecipient NVARCHAR(320) = N'dev-test@local.invalid';
 
@@ -37,7 +35,7 @@ DECLARE @Description NVARCHAR(255) = N'Local smtp4dev profile for SharePoint ing
 DECLARE @EmailAddress NVARCHAR(320) = N'sharepoint-ingest-dev@localhost';
 DECLARE @ReplyToAddress NVARCHAR(320) = N'sharepoint-ingest-dev@localhost';
 DECLARE @DisplayName NVARCHAR(128) = N'SharePoint Ingest Dev';
-DECLARE @SmtpServer NVARCHAR(255) = N'host.docker.internal';
+DECLARE @SmtpServer NVARCHAR(255) = N'localhost';
 DECLARE @SmtpPort INT = 2525;
 
 DECLARE @account_id INT = (
