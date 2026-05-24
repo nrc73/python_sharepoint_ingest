@@ -17,9 +17,9 @@ Read-only discovery tool that:
      and excel_tab_name (for Excel ingestions).
    - INSERT INTO [config].[sharepoint_ingestion] ...
 
-Usage
------
-    python tools/discover_new_ingestion.py [--env dev|test|prod]
+Usage (DEV only)
+----------------
+    python tools/discover_new_ingestion.py [--env dev]
                                            [--base-folder PATH]
                                            [--dest-schema dbo]
                                            [--no-profile]
@@ -29,15 +29,18 @@ Usage
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import itertools
 import math
 import os
 import re
 import sys
 import uuid
+from dataclasses import dataclass, field
 from collections import defaultdict
 from io import BytesIO
 from typing import Any
+from urllib.parse import urlparse
 
 import pandas as pd
 
@@ -81,6 +84,33 @@ _PK_NUMERIC_TYPES = {"INT", "BIGINT"}
 _CODE_MAX_LEN = 50           # max observed character length – codes are short
 _CODE_CV_THRESHOLD = 0.40    # coefficient of variation (std/mean) – codes are consistent length
 _CODE_PATTERN = re.compile(r"^[A-Za-z0-9][-_/A-Za-z0-9]*$")  # no spaces, structured chars
+
+
+@dataclass
+class _ProfileCandidate:
+    """One profiled file candidate (potentially with multiple sheets)."""
+
+    file_name: str
+    server_relative_url: str
+    file_kind: str  # csv|parquet|excel
+    normalized_business_columns: tuple[str, ...]
+    combined_profile: dict[str, str]
+    full_frames: list[pd.DataFrame] = field(default_factory=list)
+    any_excel: bool = False
+
+
+@dataclass
+class _DiscoveryGroup:
+    """A generated ingestion recommendation unit."""
+
+    group_key: str
+    file_names: list[str]
+    files: list[_ProfileCandidate]
+    combined_profile: dict[str, str]
+    full_frames: list[pd.DataFrame]
+    any_excel: bool
+    multi_file_ingest: int
+    file_name_pattern: str
 
 
 def _is_code_like_varchar(series: pd.Series) -> bool:
@@ -534,6 +564,269 @@ def _derive_file_pattern(file_names: list[str]) -> str:
     return f"*"
 
 
+def _normalize_business_col_name(name: str) -> str:
+    return str(name).strip().lower()
+
+
+def _file_kind_from_name(file_name: str) -> str:
+    lower = file_name.lower()
+    if lower.endswith((".xlsx", ".xls", ".xlsm")):
+        return "excel"
+    if lower.endswith(".parquet"):
+        return "parquet"
+    if lower.endswith((".csv", ".txt")):
+        return "csv"
+    return "other"
+
+
+def _name_stem_signature(file_name: str) -> tuple[str, str]:
+    stem, ext = os.path.splitext(file_name.lower())
+    stem_norm = re.sub(r"[_\-\s]+", "_", stem)
+    stem_norm = re.sub(r"\d+", "{n}", stem_norm).strip("_")
+    return stem_norm, ext
+
+
+def _same_filename_family(file_names: list[str]) -> bool:
+    if len(file_names) < 2:
+        return False
+    signatures = [_name_stem_signature(n) for n in file_names]
+    exts = {ext for _, ext in signatures}
+    stems = {stem for stem, _ in signatures}
+    return len(exts) == 1 and len(stems) == 1
+
+
+def _derive_family_pattern(file_names: list[str]) -> str:
+    if not file_names:
+        return ""
+    if len(file_names) == 1:
+        return file_names[0]
+    stem_sig, ext = _name_stem_signature(file_names[0])
+    stem_glob = stem_sig.replace("{n}", "*")
+    stem_glob = re.sub(r"_+", "_", stem_glob).strip("_")
+    if not stem_glob:
+        stem_glob = "*"
+    return f"{stem_glob}{ext}"
+
+
+def _build_profile_candidate(sp, fi) -> _ProfileCandidate | None:
+    try:
+        raw = sp.download_file_to_bytes(fi.server_relative_url)
+    except Exception as exc:
+        print(f"    [WARN] Download failed for '{fi.name}': {exc}")
+        return None
+
+    sheets = _read_file_sheets(raw, fi.name)
+    if not sheets:
+        return None
+
+    file_kind = _file_kind_from_name(fi.name)
+    any_excel = file_kind == "excel"
+    combined_profile: dict[str, str] = {}
+    full_frames: list[pd.DataFrame] = []
+
+    for sheet_key, df in sheets.items():
+        local = df.copy()
+        if any_excel:
+            local["excel_tab_name"] = sheet_key
+        local["source_file_name"] = fi.name
+        full_frames.append(local)
+        prof = _profile_df(local.drop(columns=["source_file_name", "excel_tab_name"], errors="ignore"))
+        combined_profile = _merge_profiles(combined_profile, prof)
+
+    normalized_business_columns = tuple(_normalize_business_col_name(c) for c in combined_profile.keys())
+    return _ProfileCandidate(
+        file_name=fi.name,
+        server_relative_url=fi.server_relative_url,
+        file_kind=file_kind,
+        normalized_business_columns=normalized_business_columns,
+        combined_profile=combined_profile,
+        full_frames=full_frames,
+        any_excel=any_excel,
+    )
+
+
+def _layout_key(candidate: _ProfileCandidate) -> str:
+    cols = "|".join(candidate.normalized_business_columns)
+    return f"{candidate.file_kind}::{cols}"
+
+
+def _merge_candidates_to_group(
+    *,
+    group_key: str,
+    candidates: list[_ProfileCandidate],
+    force_single_file: bool,
+) -> _DiscoveryGroup:
+    combined_profile: dict[str, str] = {}
+    full_frames: list[pd.DataFrame] = []
+    any_excel = False
+    file_names: list[str] = []
+    for c in candidates:
+        file_names.append(c.file_name)
+        any_excel = any_excel or c.any_excel
+        full_frames.extend(c.full_frames)
+        combined_profile = _merge_profiles(combined_profile, c.combined_profile)
+
+    can_multi = (not force_single_file) and len(candidates) > 1 and _same_filename_family(file_names)
+    if can_multi:
+        pattern = _derive_family_pattern(file_names)
+        multi = 1
+    else:
+        # caller should split into single-file groups if mixed names/layouts.
+        pattern = file_names[0] if len(file_names) == 1 else _derive_file_pattern(file_names)
+        multi = 0 if len(file_names) == 1 else 0
+
+    return _DiscoveryGroup(
+        group_key=group_key,
+        file_names=file_names,
+        files=candidates,
+        combined_profile=combined_profile,
+        full_frames=full_frames,
+        any_excel=any_excel,
+        multi_file_ingest=multi,
+        file_name_pattern=pattern,
+    )
+
+
+def _build_discovery_groups(candidates: list[_ProfileCandidate]) -> list[_DiscoveryGroup]:
+    """Group files by layout; multi-file only for same-family same-layout.
+
+    If file names differ and appear unrelated, force single-file recommendations.
+    """
+    by_layout: dict[str, list[_ProfileCandidate]] = defaultdict(list)
+    for c in candidates:
+        by_layout[_layout_key(c)].append(c)
+
+    groups: list[_DiscoveryGroup] = []
+    for key, layout_candidates in by_layout.items():
+        layout_candidates = sorted(layout_candidates, key=lambda c: c.file_name.lower())
+        if len(layout_candidates) == 1:
+            groups.append(_merge_candidates_to_group(group_key=key, candidates=layout_candidates, force_single_file=True))
+            continue
+
+        if _same_filename_family([c.file_name for c in layout_candidates]):
+            groups.append(_merge_candidates_to_group(group_key=key, candidates=layout_candidates, force_single_file=False))
+            continue
+
+        # Same layout but unrelated file names: emit separate single-file configs.
+        for c in layout_candidates:
+            groups.append(_merge_candidates_to_group(group_key=f"{key}::{c.file_name}", candidates=[c], force_single_file=True))
+
+    return groups
+
+
+def _safe_suffix_from_file_name(file_name: str) -> str:
+    stem = os.path.splitext(file_name)[0]
+    safe = re.sub(r"[^a-zA-Z0-9_]+", "_", stem).strip("_")
+    return safe or "file"
+
+
+def _print_group_sql(
+    *,
+    group: _DiscoveryGroup,
+    folder_name: str,
+    folder_safe_name: str,
+    folder_server_relative_url: str,
+    default_base_url: str,
+    dest_schema: str,
+    padding: float,
+    all_file_names_in_folder: list[str],
+) -> None:
+    archive_folder = f"{folder_server_relative_url}/Processed"
+    failed_folder = f"{folder_server_relative_url}/Failed"
+
+    if group.full_frames:
+        try:
+            full_df = pd.concat(group.full_frames, ignore_index=True)
+            pk_info = _pk_inference(full_df, group.any_excel, col_raw_types=group.combined_profile)
+        except Exception as exc:
+            print(f"    [WARN] PK inference failed for group '{group.group_key}': {exc}")
+            pk_info = _no_pk(0)
+    else:
+        pk_info = _no_pk(0)
+
+    pk_cols = pk_info["pk_columns"]
+    merge_key = ",".join(pk_cols)
+    load_strategy = pk_info["strategy"]
+    sys_cols = _SYSTEM_COLUMNS_EXCEL if group.any_excel else _SYSTEM_COLUMNS_PLAIN
+    excel_tab_name_cfg = "ALL_SHEETS" if group.any_excel else ""
+
+    # If we split by file, suffix destination table to avoid collisions.
+    if len(group.file_names) == 1:
+        suffix = _safe_suffix_from_file_name(group.file_names[0])
+        table_basename = f"dest_{folder_safe_name}_{suffix}"
+    else:
+        table_basename = f"dest_{folder_safe_name}"
+    staging_table = f"{dest_schema}.{table_basename}"
+
+    print(f"\n{'─'*60}")
+    print("-- " + "─" * 58)
+    print(f"-- CREATE TABLE for new folder: {folder_name}")
+    print(f"-- Group key:    {group.group_key}")
+    print(f"-- Files in group ({len(group.file_names)}): {', '.join(group.file_names)}")
+    print(f"-- Dest table:   {staging_table}")
+    print(f"-- Type:         {'Excel (all-sheets merged)' if group.any_excel else 'CSV/Parquet'}")
+    print(f"-- multi_file_ingest: {group.multi_file_ingest}")
+    print(f"-- file_name_pattern: {group.file_name_pattern}")
+    print("-- " + "─" * 58)
+    print()
+    print(
+        _generate_create_table(
+            schema=dest_schema,
+            table_name=table_basename,
+            data_columns=group.combined_profile,
+            system_columns=sys_cols,
+            pk_columns=pk_cols,
+            padding=padding,
+        )
+    )
+
+    print()
+    print("-- " + "─" * 58)
+    print("-- PK Inference Evidence")
+    print("-- " + "─" * 58)
+    if pk_cols:
+        print(f"-- Suggested composite PK: {', '.join(pk_cols)}")
+    else:
+        print("-- No reliable PK found — review manually, PK omitted")
+    print(f"-- Rows scanned:   {pk_info['rows_scanned']:,}")
+    if pk_cols:
+        print(f"-- Distinct key combos: {pk_info['distinct_count']:,}")
+        print(f"-- Null key rows:  {pk_info['null_key_rows']}")
+        print(f"-- Duplicate rows: {pk_info['duplicate_rows']}")
+    print(f"-- Suggested load_strategy: {load_strategy}")
+    print(f"-- Suggested merge_key_columns: {merge_key or '(none)'}")
+
+    overlap = [n for n in all_file_names_in_folder if fnmatch.fnmatch(n, group.file_name_pattern)]
+    outside_group = sorted(set(overlap) - set(group.file_names))
+    if outside_group:
+        print("-- WARNING: file_name_pattern overlaps files outside this group:")
+        print(f"--          {', '.join(outside_group)}")
+        print("--          Consider narrowing the pattern before applying config SQL.")
+    print()
+
+    print("-- " + "─" * 58)
+    print("-- INSERT INTO [config].[sharepoint_ingestion]")
+    print("-- " + "─" * 58)
+    print(
+        _generate_config_insert(
+            sharepoint_base_url=default_base_url,
+            sharepoint_process_folder=folder_server_relative_url,
+            sharepoint_process_archive_folder=archive_folder,
+            sharepoint_process_failed_folder=failed_folder,
+            staging_table_name=staging_table,
+            excel_tab_name=excel_tab_name_cfg,
+            multi_file_ingest=group.multi_file_ingest,
+            check_source_dest_columns=1,
+            is_active=1,
+            ingestion_scope="REAL",
+            load_strategy=load_strategy,
+            merge_key_columns=merge_key,
+            file_name_pattern=group.file_name_pattern,
+        )
+    )
+    print()
+
+
 # ---------------------------------------------------------------------------
 # Main discovery
 # ---------------------------------------------------------------------------
@@ -565,6 +858,40 @@ def _norm(path: str) -> str:
     return path.strip().rstrip("/").lower()
 
 
+def _configured_folder_keys(raw_folder: str, site_path: str) -> set[str]:
+    """Return normalized comparable keys for a configured process folder.
+
+    Handles both:
+    - server-relative paths: /sites/<site>/Documents/<folder>
+    - site-relative paths:   /Documents/<folder> (or Documents/<folder>)
+    """
+    value = str(raw_folder or "").strip()
+    if not value:
+        return set()
+
+    keys = {_norm(value)}
+    if not value.startswith("/"):
+        keys.add(_norm(f"/{value}"))
+    if value.startswith("/sites/") or value.startswith("/teams/"):
+        return keys
+
+    normalized_site = _norm(site_path or "")
+    if not normalized_site:
+        return keys
+
+    value_with_leading_slash = value if value.startswith("/") else f"/{value}"
+    keys.add(_norm(f"{normalized_site}{value_with_leading_slash}"))
+    return keys
+
+
+def _assert_dev_only(env_name: str) -> None:
+    if str(env_name or "").strip().lower() != "dev":
+        raise RuntimeError(
+            "tools/discover_new_ingestion.py is DEV-only. "
+            "Use --env dev and run against the dev environment only."
+        )
+
+
 def discover(
     env: str | None = None,
     base_folder: str | None = None,
@@ -582,6 +909,7 @@ def discover(
     # ------------------------------------------------------------------
     print(f"\n[1/5] Loading settings (env={env or 'auto'}) …")
     settings = load_settings(env_override=env)
+    _assert_dev_only(getattr(settings, "env_name", ""))
     print(f"      SQL:             {settings.sql.host}/{settings.sql.database}")
     print(f"      SharePoint site: {settings.sharepoint.site_url}")
     sql = SqlClient(settings.sql)
@@ -597,11 +925,16 @@ def discover(
     )
     print(f"      Found {len(existing_rows)} row(s).")
 
-    configured = {
-        _norm(str(r.get("sharepoint_process_folder") or ""))
-        for r in existing_rows
-        if str(r.get("sharepoint_process_folder") or "").strip()
-    }
+    site_path = (urlparse(settings.sharepoint.site_url).path or "").rstrip("/")
+    configured: set[str] = set()
+    for row in existing_rows:
+        configured.update(
+            _configured_folder_keys(
+                str(row.get("sharepoint_process_folder") or ""),
+                site_path,
+            )
+        )
+    print(f"      Normalized configured folder key(s): {len(configured)}")
 
     first = existing_rows[0] if existing_rows else None
     default_base_url = str(first.get("sharepoint_base_url") or "") if first else ""
@@ -661,11 +994,7 @@ def discover(
 
         folder_name = sp_folder.name
         safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", folder_name)
-        staging_table = f"{dest_schema}.dest_{safe_name}"
-        archive_folder = f"{sp_folder.server_relative_url}/Processed"
-        failed_folder = f"{sp_folder.server_relative_url}/Failed"
         file_names = [fi.name for fi in files]
-        file_pattern = _derive_file_pattern(file_names)
         excel_ingest = all(_is_excel(fi.name) for fi in files)
 
         print(f"\n  {sep}")
@@ -673,7 +1002,7 @@ def discover(
         print(f"  Folder path:    {sp_folder.server_relative_url}")
         print(f"  Files:          {len(files)}")
         print(f"  Type:           {'Excel (all-sheets)' if excel_ingest else 'CSV/Parquet'}")
-        print(f"  Dest table:     {staging_table}")
+        print("  Dest table:     (derived per discovered group)")
         print(sep)
 
         if no_profile:
@@ -686,140 +1015,31 @@ def discover(
             )
             continue
 
-        # ------------------------------------------------------------------
-        # Download + profile
-        # ------------------------------------------------------------------
-        # combined_profile: {col_name: raw_type}
-        combined_profile: dict[str, str] = {}
-        # full_df: concatenated dataframe of ALL rows from ALL files/sheets
-        full_frames: list[pd.DataFrame] = []
-        any_excel = False
-
         print(f"\n  Profiling {len(files)} file(s) …")
+        candidates: list[_ProfileCandidate] = []
         for fi in files:
             print(f"    Downloading: {fi.name}")
-            try:
-                raw = sp.download_file_to_bytes(fi.server_relative_url)
-            except Exception as exc:
-                print(f"    [WARN] Download failed for '{fi.name}': {exc}")
-                continue
+            cand = _build_profile_candidate(sp, fi)
+            if cand is not None:
+                candidates.append(cand)
 
-            sheets = _read_file_sheets(raw, fi.name)
-            if not sheets:
-                continue
-
-            is_this_excel = _is_excel(fi.name)
-            if is_this_excel:
-                any_excel = True
-
-            for sheet_key, df in sheets.items():
-                # Attach excel_tab_name column for full-data PK testing
-                if is_this_excel and len(sheets) > 1:
-                    df = df.copy()
-                    df["excel_tab_name"] = sheet_key
-                elif is_this_excel and len(sheets) == 1:
-                    df = df.copy()
-                    df["excel_tab_name"] = sheet_key
-
-                # Attach source_file_name for PK testing
-                df = df.copy()
-                df["source_file_name"] = fi.name
-
-                full_frames.append(df)
-                prof = _profile_df(df.drop(columns=["source_file_name", "excel_tab_name"],
-                                           errors="ignore"))
-                combined_profile = _merge_profiles(combined_profile, prof)
-
-        if not combined_profile and not full_frames:
+        if not candidates:
             print("    [WARN] No usable data found.  Skipping.")
             continue
 
-        # ------------------------------------------------------------------
-        # Concatenate all data for PK inference
-        # ------------------------------------------------------------------
-        if full_frames:
-            print(f"    Building combined dataset for PK analysis …")
-            try:
-                full_df = pd.concat(full_frames, ignore_index=True)
-                total_rows = len(full_df)
-                print(f"    Total rows scanned: {total_rows:,}")
-                pk_info = _pk_inference(full_df, any_excel, col_raw_types=combined_profile)
-            except Exception as exc:
-                print(f"    [WARN] PK inference failed: {exc}")
-                pk_info = _no_pk(0)
-        else:
-            pk_info = _no_pk(0)
-
-        # ------------------------------------------------------------------
-        # Determine system columns
-        # ------------------------------------------------------------------
-        sys_cols = _SYSTEM_COLUMNS_EXCEL if any_excel else _SYSTEM_COLUMNS_PLAIN
-        excel_tab_name_cfg = "ALL_SHEETS" if any_excel else ""
-
-        # ------------------------------------------------------------------
-        # Print output
-        # ------------------------------------------------------------------
-        pk_cols = pk_info["pk_columns"]
-        merge_key = ",".join(pk_cols)
-        load_strategy = pk_info["strategy"]
-
-        print(f"\n{'─'*60}")
-        print("-- " + "─" * 58)
-        print(f"-- CREATE TABLE for new folder: {folder_name}")
-        print(f"-- Dest table:  {staging_table}")
-        print(f"-- Type:        {'Excel (all-sheets merged)' if any_excel else 'CSV/Parquet'}")
-        print("-- " + "─" * 58)
-        print()
-        print(
-            _generate_create_table(
-                schema=dest_schema,
-                table_name=f"dest_{safe_name}",
-                data_columns=combined_profile,
-                system_columns=sys_cols,
-                pk_columns=pk_cols,
+        groups = _build_discovery_groups(candidates)
+        print(f"    Derived {len(groups)} ingestion recommendation group(s).")
+        for g in groups:
+            _print_group_sql(
+                group=g,
+                folder_name=folder_name,
+                folder_safe_name=safe_name,
+                folder_server_relative_url=sp_folder.server_relative_url,
+                default_base_url=default_base_url,
+                dest_schema=dest_schema,
                 padding=padding,
+                all_file_names_in_folder=file_names,
             )
-        )
-
-        # PK evidence comment
-        print()
-        print("-- " + "─" * 58)
-        print("-- PK Inference Evidence")
-        print("-- " + "─" * 58)
-        if pk_cols:
-            print(f"-- Suggested composite PK: {', '.join(pk_cols)}")
-        else:
-            print("-- No reliable PK found — review manually, PK omitted")
-        print(f"-- Rows scanned:   {pk_info['rows_scanned']:,}")
-        if pk_cols:
-            print(f"-- Distinct key combos: {pk_info['distinct_count']:,}")
-            print(f"-- Null key rows:  {pk_info['null_key_rows']}")
-            print(f"-- Duplicate rows: {pk_info['duplicate_rows']}")
-        print(f"-- Suggested load_strategy: {load_strategy}")
-        print(f"-- Suggested merge_key_columns: {merge_key or '(none)'}")
-        print()
-
-        print("-- " + "─" * 58)
-        print("-- INSERT INTO [config].[sharepoint_ingestion]")
-        print("-- " + "─" * 58)
-        print(
-            _generate_config_insert(
-                sharepoint_base_url=default_base_url,
-                sharepoint_process_folder=sp_folder.server_relative_url,
-                sharepoint_process_archive_folder=archive_folder,
-                sharepoint_process_failed_folder=failed_folder,
-                staging_table_name=staging_table,
-                excel_tab_name=excel_tab_name_cfg,
-                multi_file_ingest=1 if len(files) > 1 else 1,
-                check_source_dest_columns=1,
-                is_active=1,
-                ingestion_scope="REAL",
-                load_strategy=load_strategy,
-                merge_key_columns=merge_key,
-                file_name_pattern=file_pattern,
-            )
-        )
-        print()
 
     print(f"\n{sep}")
     print("  Discovery complete.")
@@ -873,7 +1093,7 @@ def _parse(argv=None):
         description="Discover new SharePoint ingestion folders and suggest T-SQL.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--env", default=None)
+    p.add_argument("--env", default="dev", choices=["dev"], help="DEV only (default: dev)")
     p.add_argument("--base-folder", default=None, dest="base_folder")
     p.add_argument("--dest-schema", default="dbo", dest="dest_schema")
     p.add_argument("--no-profile", action="store_true", default=False, dest="no_profile")

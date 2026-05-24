@@ -177,6 +177,22 @@ python sharepoint_setup\bootstrap_sql_schema.py --env dev --script sql/setup_ing
 Both scripts now fail fast if executed against any database other than
 `ingest_dev`.
 
+### DEV-only discovery helper
+
+`tools/discover_new_ingestion.py` is intentionally **DEV-only** and now enforces this at runtime.
+
+Use:
+
+```powershell
+python tools\discover_new_ingestion.py --env dev --base-folder "/sites/data_ingest_dev/Documents/<your_folder>"
+```
+
+Notes:
+
+- `--env` only accepts `dev`
+- running against non-dev environments is blocked with a fail-fast error
+- for SharePoint paths, pass a folder under the `Documents` library (not a library name as a root)
+
 7) Validate setup
 
 ```powershell
