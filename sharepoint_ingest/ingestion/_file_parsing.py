@@ -7,6 +7,9 @@ Extracted from ``sharepoint_ingest.ingestion_engine`` (formerly the
 from __future__ import annotations
 
 
+DEFAULT_DESTINATION_SCHEMA = "sharepoint"
+
+
 def resolve_source_kind(file_name: str) -> str:
     """Return ``"csv"``, ``"parquet"``, or ``"excel"`` from *file_name*.
 
@@ -25,9 +28,9 @@ def resolve_source_kind(file_name: str) -> str:
 def parse_destination_table(table_name: str) -> tuple[str, str]:
     """Parse a ``[schema.]table`` name into a ``(schema, table)`` pair.
 
-    Returns ``("dbo", table_name)`` when no schema prefix is present.
+    Returns ``("sharepoint", table_name)`` when no schema prefix is present.
     """
     if "." in table_name:
         schema, table = table_name.split(".", 1)
         return schema.strip(), table.strip()
-    return "dbo", table_name.strip()
+    return DEFAULT_DESTINATION_SCHEMA, table_name.strip()

@@ -43,20 +43,22 @@ GO
 DELETE FROM config.sharepoint_ingestion;
 GO
 
-TRUNCATE TABLE dbo.dest_customers;
+TRUNCATE TABLE sharepoint.dest_customers;
 GO
 
-TRUNCATE TABLE dbo.dest_transactions;
+TRUNCATE TABLE sharepoint.dest_transactions;
 GO
 
-TRUNCATE TABLE dbo.dest_transactions_large;
+TRUNCATE TABLE sharepoint.dest_transactions_large;
 GO
 
-TRUNCATE TABLE dbo.dest_invalid_csv;
+TRUNCATE TABLE sharepoint.dest_invalid_csv;
 GO
 
-TRUNCATE TABLE dbo.dest_invalid_excel;
+TRUNCATE TABLE sharepoint.dest_invalid_excel;
 GO
 
-TRUNCATE TABLE dbo.sample_ingestion_target;
+TRUNCATE TABLE sharepoint.sample_ingestion_target;
 GO
+
+

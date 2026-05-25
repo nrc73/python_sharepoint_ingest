@@ -34,7 +34,7 @@ def _config_with_folders(
         error_notification_email_address=None,
         process_id=None,
         workflow_id=None,
-        staging_table_name="dbo.target",
+        staging_table_name="sharepoint.target",
         ingestion_scope="REAL",
         ingestion_domain=None,
         is_test_data=0,
@@ -118,3 +118,4 @@ def test_process_config_continues_ingestion_when_ensure_folder_raises() -> None:
 
     assert result.files_processed == 1
     assert result.files_failed == 0
+

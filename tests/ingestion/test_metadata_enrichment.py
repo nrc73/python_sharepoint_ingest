@@ -97,3 +97,28 @@ def test_apply_ingestion_metadata_preserves_existing_excel_tab_name_values() -> 
     )
 
     assert enriched["excel_tab_name"].tolist() == ["Customers_AU", "Customers_US"]
+
+
+def test_apply_ingestion_metadata_sets_new_system_fields_when_present_in_destination() -> None:
+    engine = make_engine()
+    config = make_config("APPEND")
+    source = pd.DataFrame({"transaction_id": ["TXN000001"], "amount": [10.5]})
+    dest_cols = [
+        {"column_name": "transaction_id", "data_type": "varchar"},
+        {"column_name": "amount", "data_type": "decimal"},
+        {"column_name": "load_datetime", "data_type": "datetime"},
+        {"column_name": "__$batch_id", "data_type": "int"},
+        {"column_name": "__$job_instance_id", "data_type": "int"},
+    ]
+
+    enriched = engine._apply_ingestion_metadata(
+        source, config, destination_columns=dest_cols,
+        file_name="valid_transactions_001.csv", source_kind="csv",
+    )
+
+    assert "load_datetime" in enriched.columns
+    assert "__$batch_id" in enriched.columns
+    assert "__$job_instance_id" in enriched.columns
+    assert pd.notna(enriched.loc[0, "load_datetime"])
+    assert enriched.loc[0, "__$batch_id"] is None
+    assert enriched.loc[0, "__$job_instance_id"] is None

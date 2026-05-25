@@ -26,6 +26,12 @@ BEGIN
 END
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'sharepoint')
+BEGIN
+    EXEC('CREATE SCHEMA [sharepoint] AUTHORIZATION [dbo]');
+END
+GO
+
 IF OBJECT_ID('config.environment_policy', 'U') IS NULL
 BEGIN
     CREATE TABLE config.environment_policy (
@@ -66,6 +72,7 @@ BEGIN
         check_source_dest_columns varchar(1),
         multi_file_ingest varchar(1),
         error_notification_email_address VARCHAR(200) DEFAULT 'NathanChapman@company715.onmicrosoft.com',
+        error_notification_cc_email_address VARCHAR(400) NULL,
         process_id UNIQUEIDENTIFIER,
         workflow_id VARCHAR(100),
         staging_table_name VARCHAR(200) NOT NULL,
@@ -109,6 +116,12 @@ GO
 IF COL_LENGTH('config.sharepoint_ingestion', 'is_test_data') IS NULL
 BEGIN
     ALTER TABLE config.sharepoint_ingestion ADD is_test_data BIT NOT NULL CONSTRAINT DF_sharepoint_ingestion_is_test_data DEFAULT 0;
+END
+GO
+
+IF COL_LENGTH('config.sharepoint_ingestion', 'error_notification_cc_email_address') IS NULL
+BEGIN
+    ALTER TABLE config.sharepoint_ingestion ADD error_notification_cc_email_address VARCHAR(400) NULL;
 END
 GO
 
@@ -204,32 +217,44 @@ IF COLUMNPROPERTY(OBJECT_ID('log.sharepoint_ingestion_audit'), 'is_validated', '
     ALTER TABLE log.sharepoint_ingestion_audit ADD is_validated BIT NULL;
 GO
 
-IF OBJECT_ID('dbo.sample_ingestion_target', 'U') IS NULL
+IF OBJECT_ID('sharepoint.sample_ingestion_target', 'U') IS NULL
 BEGIN
-    CREATE TABLE dbo.sample_ingestion_target (
+    CREATE TABLE sharepoint.sample_ingestion_target (
         business_key VARCHAR(50) NOT NULL,
         name VARCHAR(200) NULL,
         amount DECIMAL(18,2) NULL,
         effective_date DATE NULL,
         source_file_name VARCHAR(255) NULL,
-        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        [__$batch_id] INT NULL,
+        [__$job_instance_id] INT NULL,
         CONSTRAINT PK_sample_ingestion_target PRIMARY KEY (business_key)
     );
 END
 GO
 
-IF COL_LENGTH('dbo.sample_ingestion_target', 'sp_ingest_created_utc') IS NULL
-    AND COL_LENGTH('dbo.sample_ingestion_target', 'created_date') IS NOT NULL
+IF COL_LENGTH('sharepoint.sample_ingestion_target', 'load_datetime') IS NULL
+    AND COL_LENGTH('sharepoint.sample_ingestion_target', 'sp_ingest_created_utc') IS NOT NULL
 BEGIN
-    EXEC sp_rename 'dbo.sample_ingestion_target.created_date', 'sp_ingest_created_utc', 'COLUMN';
+    EXEC sp_rename 'sharepoint.sample_ingestion_target.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
 END
 GO
 
-IF COL_LENGTH('dbo.sample_ingestion_target', 'sp_ingest_modified_utc') IS NULL
-    AND COL_LENGTH('dbo.sample_ingestion_target', 'modified_date') IS NOT NULL
+IF COL_LENGTH('sharepoint.sample_ingestion_target', '__$batch_id') IS NULL
 BEGIN
-    EXEC sp_rename 'dbo.sample_ingestion_target.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
+    ALTER TABLE sharepoint.sample_ingestion_target ADD [__$batch_id] INT NULL;
+END
+GO
+
+IF COL_LENGTH('sharepoint.sample_ingestion_target', '__$job_instance_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.sample_ingestion_target ADD [__$job_instance_id] INT NULL;
+END
+GO
+
+IF COL_LENGTH('sharepoint.sample_ingestion_target', 'sp_ingest_modified_utc') IS NOT NULL
+BEGIN
+    ALTER TABLE sharepoint.sample_ingestion_target DROP COLUMN sp_ingest_modified_utc;
 END
 GO
 
@@ -271,7 +296,7 @@ BEGIN
         'NathanChapman@company715.onmicrosoft.com',
         NEWID(),
         'workflow-sample-001',
-        'dbo.sample_ingestion_target',
+        'sharepoint.sample_ingestion_target',
         '1',
         'REAL',
         NULL,

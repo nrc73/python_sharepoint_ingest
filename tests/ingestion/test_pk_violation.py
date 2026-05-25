@@ -42,7 +42,7 @@ def test_append_load_raises_pk_violation_value_error_on_integrity_error() -> Non
 
     with patch("pandas.DataFrame.to_sql", side_effect=orig_exc):
         with pytest.raises(ValueError, match="PRIMARY_KEY_VIOLATION"):
-            sql.append_load(df, "dbo.target")
+            sql.append_load(df, "sharepoint.target")
 
 
 def test_intra_file_duplicate_keys_raise_before_sql_on_append() -> None:
@@ -77,8 +77,8 @@ def test_notify_pk_violation_builds_dedicated_subject_and_remediation_body() -> 
     sent_calls: list[tuple] = []
 
     class CapturingNotifier:
-        def send(self, to_address, subject, body):
-            sent_calls.append((to_address, subject, body))
+        def send(self, to_address, subject, body, cc_addresses=None):
+            sent_calls.append((to_address, subject, body, cc_addresses))
             return True
 
     engine = make_engine()
@@ -88,15 +88,16 @@ def test_notify_pk_violation_builds_dedicated_subject_and_remediation_body() -> 
 
     error_msg = (
         "Config 1 failed for file test.csv: PRIMARY_KEY_VIOLATION: File contains 4 rows "
-        "with duplicate values on key column(s) ['id'] for table 'dbo.target'."
+        "with duplicate values on key column(s) ['id'] for table 'sharepoint.target'."
     )
     engine._notify_pk_violation(config, error_msg, file_name="test.csv", rows_scanned=4)
 
     assert len(sent_calls) == 1
-    to_addr, subject, body = sent_calls[0]
+    to_addr, subject, body, cc_addrs = sent_calls[0]
     assert to_addr == "ops@example.com"
+    assert cc_addrs is None
     assert "PRIMARY KEY VIOLATION" in subject
-    assert "dbo.target" in body
+    assert "sharepoint.target" in body
     assert "Remediation options" in body
     assert "FULL RELOAD" in body
     assert "MANUAL CLEAN" in body
@@ -108,7 +109,7 @@ def test_pk_violation_email_body_contains_full_context() -> None:
         process_name="config_id=1, workflow_id=wf-test",
         error_message="PRIMARY_KEY_VIOLATION: duplicate keys on business_key",
         file_name="reload_test.csv",
-        table_name="dbo.sample_ingestion_target",
+        table_name="sharepoint.sample_ingestion_target",
         key_columns=["business_key"],
         duplicate_count=6,
         sample_values=[{"business_key": "BK001"}, {"business_key": "BK002"}],
@@ -119,7 +120,7 @@ def test_pk_violation_email_body_contains_full_context() -> None:
 
     assert "PRIMARY KEY VIOLATION" in body
     assert "reload_test.csv" in body
-    assert "dbo.sample_ingestion_target" in body
+    assert "sharepoint.sample_ingestion_target" in body
     assert "business_key" in body
     assert "6" in body
     assert "BK001" in body
@@ -127,3 +128,5 @@ def test_pk_violation_email_body_contains_full_context() -> None:
     assert "MANUAL CLEAN" in body
     assert "100" in body
     assert "45.2 MB" in body
+
+

@@ -62,7 +62,7 @@ Creates:
 
 - `config.sharepoint_ingestion`
 - `log.sharepoint_ingestion_audit`
-- `dbo.sample_ingestion_target`
+- `sharepoint.sample_ingestion_target`
 
 ## 3) Seed Azure Key Vault secrets
 

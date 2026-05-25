@@ -40,6 +40,8 @@ SUPPORTED_AUTH_MODES = (
     INTEGRATED_AUTH_MODES | PASSWORDLESS_TOKEN_AUTH_MODES | PASSWORD_AUTH_MODES
 )
 
+DEFAULT_DESTINATION_SCHEMA = "sharepoint"
+
 
 def normalize_sql_auth_mode(auth_mode: Optional[str]) -> str:
     return (auth_mode or "sql_password").strip().lower()
@@ -76,7 +78,7 @@ def _parse_table_name(table_name: str) -> tuple[str, str]:
     if "." in table_name:
         schema, table = table_name.split(".", 1)
         return schema.strip(), table.strip()
-    return "dbo", table_name.strip()
+    return DEFAULT_DESTINATION_SCHEMA, table_name.strip()
 
 
 class SqlClient:
@@ -233,6 +235,7 @@ class SqlClient:
             load_strategy=row.get("load_strategy"),
             merge_key_columns=row.get("merge_key_columns"),
             column_mapping_json=row.get("column_mapping_json"),
+            error_notification_cc_email_address=row.get("error_notification_cc_email_address"),
         )
 
     def get_table_columns(self, table_name: str) -> list[dict[str, Any]]:

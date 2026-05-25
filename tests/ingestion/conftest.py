@@ -147,7 +147,7 @@ def make_config(load_strategy: str = "TRUNCATE") -> IngestionConfig:
         error_notification_email_address=None,
         process_id=None,
         workflow_id=None,
-        staging_table_name="dbo.target",
+        staging_table_name="sharepoint.target",
         ingestion_scope="REAL",
         ingestion_domain=None,
         is_test_data=0,
@@ -179,3 +179,4 @@ def make_engine(
         sp or DummySharePointClient(payload),
         logging.getLogger(logger_name),
     )
+

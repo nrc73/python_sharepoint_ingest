@@ -21,9 +21,9 @@ def main() -> int:
     sql_client = SqlClient(settings.sql)
 
     checks = {
-        "dest_customers": _count(sql_client, "SELECT COUNT(1) AS cnt FROM dbo.dest_customers"),
-        "dest_transactions": _count(sql_client, "SELECT COUNT(1) AS cnt FROM dbo.dest_transactions"),
-        "dest_transactions_large": _count(sql_client, "SELECT COUNT(1) AS cnt FROM dbo.dest_transactions_large"),
+        "dest_customers": _count(sql_client, "SELECT COUNT(1) AS cnt FROM sharepoint.dest_customers"),
+        "dest_transactions": _count(sql_client, "SELECT COUNT(1) AS cnt FROM sharepoint.dest_transactions"),
+        "dest_transactions_large": _count(sql_client, "SELECT COUNT(1) AS cnt FROM sharepoint.dest_transactions_large"),
         "audit_log": _count(sql_client, "SELECT COUNT(1) AS cnt FROM log.sharepoint_ingestion_audit"),
         "valid_config_workflows": _count(
             sql_client,
@@ -48,3 +48,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

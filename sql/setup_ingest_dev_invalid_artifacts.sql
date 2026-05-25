@@ -112,9 +112,15 @@ BEGIN
 END
 GO
 
-IF OBJECT_ID('dbo.dest_invalid_csv', 'U') IS NULL
+IF COL_LENGTH('config.sharepoint_ingestion', 'error_notification_cc_email_address') IS NULL
 BEGIN
-    CREATE TABLE dbo.dest_invalid_csv (
+    ALTER TABLE config.sharepoint_ingestion ADD error_notification_cc_email_address VARCHAR(400) NULL;
+END
+GO
+
+IF OBJECT_ID('sharepoint.dest_invalid_csv', 'U') IS NULL
+BEGIN
+    CREATE TABLE sharepoint.dest_invalid_csv (
         transaction_id VARCHAR(20) NOT NULL,
         customer_id VARCHAR(20) NULL,
         transaction_date DATE NULL,
@@ -122,99 +128,111 @@ BEGIN
         currency VARCHAR(10) NULL,
         status VARCHAR(20) NULL,
         source_file_name VARCHAR(255) NULL,
-        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        [__$batch_id] INT NULL,
+        [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_invalid_csv PRIMARY KEY (transaction_id)
     );
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_csv', 'sp_ingest_created_utc') IS NULL
-    AND COL_LENGTH('dbo.dest_invalid_csv', 'created_date') IS NOT NULL
+IF COL_LENGTH('sharepoint.dest_invalid_csv', 'load_datetime') IS NULL
+    AND COL_LENGTH('sharepoint.dest_invalid_csv', 'sp_ingest_created_utc') IS NOT NULL
 BEGIN
-    EXEC sp_rename 'dbo.dest_invalid_csv.created_date', 'sp_ingest_created_utc', 'COLUMN';
+    EXEC sp_rename 'sharepoint.dest_invalid_csv.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_csv', 'sp_ingest_modified_utc') IS NULL
-    AND COL_LENGTH('dbo.dest_invalid_csv', 'modified_date') IS NOT NULL
+IF COL_LENGTH('sharepoint.dest_invalid_csv', '__$batch_id') IS NULL
 BEGIN
-    EXEC sp_rename 'dbo.dest_invalid_csv.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
+    ALTER TABLE sharepoint.dest_invalid_csv ADD [__$batch_id] INT NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_csv', 'source_file_name') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_csv', '__$job_instance_id') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_invalid_csv ADD source_file_name VARCHAR(255) NULL;
+    ALTER TABLE sharepoint.dest_invalid_csv ADD [__$job_instance_id] INT NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_csv', 'transaction_id') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_csv', 'sp_ingest_modified_utc') IS NOT NULL
 BEGIN
-    IF COL_LENGTH('dbo.dest_invalid_csv', 'RecordId') IS NOT NULL
+    ALTER TABLE sharepoint.dest_invalid_csv DROP COLUMN sp_ingest_modified_utc;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_invalid_csv', 'source_file_name') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_invalid_csv ADD source_file_name VARCHAR(255) NULL;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_invalid_csv', 'transaction_id') IS NULL
+BEGIN
+    IF COL_LENGTH('sharepoint.dest_invalid_csv', 'RecordId') IS NOT NULL
     BEGIN
-        EXEC sp_rename 'dbo.dest_invalid_csv.RecordId', 'transaction_id', 'COLUMN';
+        EXEC sp_rename 'sharepoint.dest_invalid_csv.RecordId', 'transaction_id', 'COLUMN';
     END
     ELSE
     BEGIN
-        ALTER TABLE dbo.dest_invalid_csv ADD transaction_id VARCHAR(20) NULL;
+        ALTER TABLE sharepoint.dest_invalid_csv ADD transaction_id VARCHAR(20) NULL;
     END
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_csv', 'customer_id') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_csv', 'customer_id') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_invalid_csv ADD customer_id VARCHAR(20) NULL;
+    ALTER TABLE sharepoint.dest_invalid_csv ADD customer_id VARCHAR(20) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_csv', 'transaction_date') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_csv', 'transaction_date') IS NULL
 BEGIN
-    IF COL_LENGTH('dbo.dest_invalid_csv', 'EffectiveDate') IS NOT NULL
+    IF COL_LENGTH('sharepoint.dest_invalid_csv', 'EffectiveDate') IS NOT NULL
     BEGIN
-        EXEC sp_rename 'dbo.dest_invalid_csv.EffectiveDate', 'transaction_date', 'COLUMN';
+        EXEC sp_rename 'sharepoint.dest_invalid_csv.EffectiveDate', 'transaction_date', 'COLUMN';
     END
     ELSE
     BEGIN
-        ALTER TABLE dbo.dest_invalid_csv ADD transaction_date DATE NULL;
+        ALTER TABLE sharepoint.dest_invalid_csv ADD transaction_date DATE NULL;
     END
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_csv', 'amount') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_csv', 'amount') IS NULL
 BEGIN
-    IF COL_LENGTH('dbo.dest_invalid_csv', 'Amount') IS NOT NULL
+    IF COL_LENGTH('sharepoint.dest_invalid_csv', 'Amount') IS NOT NULL
     BEGIN
-        EXEC sp_rename 'dbo.dest_invalid_csv.Amount', 'amount', 'COLUMN';
+        EXEC sp_rename 'sharepoint.dest_invalid_csv.Amount', 'amount', 'COLUMN';
     END
     ELSE
     BEGIN
-        ALTER TABLE dbo.dest_invalid_csv ADD amount DECIMAL(18,2) NULL;
+        ALTER TABLE sharepoint.dest_invalid_csv ADD amount DECIMAL(18,2) NULL;
     END
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_csv', 'currency') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_csv', 'currency') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_invalid_csv ADD currency VARCHAR(10) NULL;
+    ALTER TABLE sharepoint.dest_invalid_csv ADD currency VARCHAR(10) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_csv', 'status') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_csv', 'status') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_invalid_csv ADD status VARCHAR(20) NULL;
+    ALTER TABLE sharepoint.dest_invalid_csv ADD status VARCHAR(20) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_csv', 'Quantity') IS NOT NULL
+IF COL_LENGTH('sharepoint.dest_invalid_csv', 'Quantity') IS NOT NULL
 BEGIN
-    ALTER TABLE dbo.dest_invalid_csv DROP COLUMN Quantity;
+    ALTER TABLE sharepoint.dest_invalid_csv DROP COLUMN Quantity;
 END
 GO
 
-IF OBJECT_ID('dbo.dest_invalid_excel', 'U') IS NULL
+IF OBJECT_ID('sharepoint.dest_invalid_excel', 'U') IS NULL
 BEGIN
-    CREATE TABLE dbo.dest_invalid_excel (
+    CREATE TABLE sharepoint.dest_invalid_excel (
         customer_id VARCHAR(20) NOT NULL,
         customer_name VARCHAR(200) NULL,
         signup_date DATE NULL,
@@ -224,112 +242,124 @@ BEGIN
         source_system VARCHAR(50) NULL,
         excel_tab_name VARCHAR(100) NOT NULL,
         source_file_name VARCHAR(255) NULL,
-        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        [__$batch_id] INT NULL,
+        [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_invalid_excel PRIMARY KEY (customer_id, excel_tab_name)
     );
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_excel', 'sp_ingest_created_utc') IS NULL
-    AND COL_LENGTH('dbo.dest_invalid_excel', 'created_date') IS NOT NULL
+IF COL_LENGTH('sharepoint.dest_invalid_excel', 'load_datetime') IS NULL
+    AND COL_LENGTH('sharepoint.dest_invalid_excel', 'sp_ingest_created_utc') IS NOT NULL
 BEGIN
-    EXEC sp_rename 'dbo.dest_invalid_excel.created_date', 'sp_ingest_created_utc', 'COLUMN';
+    EXEC sp_rename 'sharepoint.dest_invalid_excel.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_excel', 'sp_ingest_modified_utc') IS NULL
-    AND COL_LENGTH('dbo.dest_invalid_excel', 'modified_date') IS NOT NULL
+IF COL_LENGTH('sharepoint.dest_invalid_excel', '__$batch_id') IS NULL
 BEGIN
-    EXEC sp_rename 'dbo.dest_invalid_excel.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
+    ALTER TABLE sharepoint.dest_invalid_excel ADD [__$batch_id] INT NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_excel', 'source_file_name') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_excel', '__$job_instance_id') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_invalid_excel ADD source_file_name VARCHAR(255) NULL;
+    ALTER TABLE sharepoint.dest_invalid_excel ADD [__$job_instance_id] INT NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_excel', 'customer_id') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_excel', 'sp_ingest_modified_utc') IS NOT NULL
 BEGIN
-    IF COL_LENGTH('dbo.dest_invalid_excel', 'CustomerId') IS NOT NULL
+    ALTER TABLE sharepoint.dest_invalid_excel DROP COLUMN sp_ingest_modified_utc;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_invalid_excel', 'source_file_name') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_invalid_excel ADD source_file_name VARCHAR(255) NULL;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_invalid_excel', 'customer_id') IS NULL
+BEGIN
+    IF COL_LENGTH('sharepoint.dest_invalid_excel', 'CustomerId') IS NOT NULL
     BEGIN
-        EXEC sp_rename 'dbo.dest_invalid_excel.CustomerId', 'customer_id', 'COLUMN';
+        EXEC sp_rename 'sharepoint.dest_invalid_excel.CustomerId', 'customer_id', 'COLUMN';
     END
     ELSE
     BEGIN
-        ALTER TABLE dbo.dest_invalid_excel ADD customer_id VARCHAR(20) NULL;
+        ALTER TABLE sharepoint.dest_invalid_excel ADD customer_id VARCHAR(20) NULL;
     END
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_excel', 'customer_name') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_excel', 'customer_name') IS NULL
 BEGIN
-    IF COL_LENGTH('dbo.dest_invalid_excel', 'CustomerName') IS NOT NULL
+    IF COL_LENGTH('sharepoint.dest_invalid_excel', 'CustomerName') IS NOT NULL
     BEGIN
-        EXEC sp_rename 'dbo.dest_invalid_excel.CustomerName', 'customer_name', 'COLUMN';
+        EXEC sp_rename 'sharepoint.dest_invalid_excel.CustomerName', 'customer_name', 'COLUMN';
     END
     ELSE
     BEGIN
-        ALTER TABLE dbo.dest_invalid_excel ADD customer_name VARCHAR(200) NULL;
+        ALTER TABLE sharepoint.dest_invalid_excel ADD customer_name VARCHAR(200) NULL;
     END
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_excel', 'signup_date') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_excel', 'signup_date') IS NULL
 BEGIN
-    IF COL_LENGTH('dbo.dest_invalid_excel', 'SignupDate') IS NOT NULL
+    IF COL_LENGTH('sharepoint.dest_invalid_excel', 'SignupDate') IS NOT NULL
     BEGIN
-        EXEC sp_rename 'dbo.dest_invalid_excel.SignupDate', 'signup_date', 'COLUMN';
+        EXEC sp_rename 'sharepoint.dest_invalid_excel.SignupDate', 'signup_date', 'COLUMN';
     END
     ELSE
     BEGIN
-        ALTER TABLE dbo.dest_invalid_excel ADD signup_date DATE NULL;
+        ALTER TABLE sharepoint.dest_invalid_excel ADD signup_date DATE NULL;
     END
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_excel', 'credit_limit') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_excel', 'credit_limit') IS NULL
 BEGIN
-    IF COL_LENGTH('dbo.dest_invalid_excel', 'CreditLimit') IS NOT NULL
+    IF COL_LENGTH('sharepoint.dest_invalid_excel', 'CreditLimit') IS NOT NULL
     BEGIN
-        EXEC sp_rename 'dbo.dest_invalid_excel.CreditLimit', 'credit_limit', 'COLUMN';
+        EXEC sp_rename 'sharepoint.dest_invalid_excel.CreditLimit', 'credit_limit', 'COLUMN';
     END
     ELSE
     BEGIN
-        ALTER TABLE dbo.dest_invalid_excel ADD credit_limit DECIMAL(18,2) NULL;
+        ALTER TABLE sharepoint.dest_invalid_excel ADD credit_limit DECIMAL(18,2) NULL;
     END
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_excel', 'is_active') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_excel', 'is_active') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_invalid_excel ADD is_active VARCHAR(1) NULL;
+    ALTER TABLE sharepoint.dest_invalid_excel ADD is_active VARCHAR(1) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_excel', 'region_code') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_excel', 'region_code') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_invalid_excel ADD region_code VARCHAR(10) NULL;
+    ALTER TABLE sharepoint.dest_invalid_excel ADD region_code VARCHAR(10) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_excel', 'source_system') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_excel', 'source_system') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_invalid_excel ADD source_system VARCHAR(50) NULL;
+    ALTER TABLE sharepoint.dest_invalid_excel ADD source_system VARCHAR(50) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_excel', 'excel_tab_name') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_excel', 'excel_tab_name') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_invalid_excel ADD excel_tab_name VARCHAR(100) NULL;
+    ALTER TABLE sharepoint.dest_invalid_excel ADD excel_tab_name VARCHAR(100) NULL;
 END
 GO
 
-IF OBJECT_ID('dbo.dest_invalid_parquet', 'U') IS NULL
+IF OBJECT_ID('sharepoint.dest_invalid_parquet', 'U') IS NULL
 BEGIN
-    CREATE TABLE dbo.dest_invalid_parquet (
+    CREATE TABLE sharepoint.dest_invalid_parquet (
         transaction_id VARCHAR(20) NOT NULL,
         customer_id VARCHAR(20) NULL,
         transaction_date DATE NULL,
@@ -338,16 +368,17 @@ BEGIN
         status VARCHAR(10) NULL,
         source_system VARCHAR(50) NULL,
         source_file_name VARCHAR(255) NULL,
-        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        [__$batch_id] INT NULL,
+        [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_invalid_parquet PRIMARY KEY (transaction_id)
     );
 END
 GO
 
-IF COL_LENGTH('dbo.dest_invalid_parquet', 'source_file_name') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_parquet', 'source_file_name') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_invalid_parquet ADD source_file_name VARCHAR(255) NULL;
+    ALTER TABLE sharepoint.dest_invalid_parquet ADD source_file_name VARCHAR(255) NULL;
 END
 GO
 
@@ -381,7 +412,7 @@ WHEN MATCHED THEN
         multi_file_ingest = '1',
         error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
         process_id = COALESCE(target.process_id, NEWID()),
-        staging_table_name = 'dbo.dest_invalid_csv',
+        staging_table_name = 'sharepoint.dest_invalid_csv',
         is_active = '1',
         ingestion_scope = 'TEST',
         ingestion_domain = 'sample_artifacts',
@@ -428,7 +459,7 @@ WHEN NOT MATCHED THEN
         'NathanChapman@company715.onmicrosoft.com',
         NEWID(),
         'wf-invalid-csv-all',
-        'dbo.dest_invalid_csv',
+        'sharepoint.dest_invalid_csv',
         '1',
         'TEST',
         'sample_artifacts',
@@ -456,7 +487,7 @@ WHEN MATCHED THEN
         multi_file_ingest = '1',
         error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
         process_id = COALESCE(target.process_id, NEWID()),
-        staging_table_name = 'dbo.dest_invalid_excel',
+        staging_table_name = 'sharepoint.dest_invalid_excel',
         is_active = '1',
         ingestion_scope = 'TEST',
         ingestion_domain = 'sample_artifacts',
@@ -503,7 +534,7 @@ WHEN NOT MATCHED THEN
         'NathanChapman@company715.onmicrosoft.com',
         NEWID(),
         'wf-invalid-excel-all',
-        'dbo.dest_invalid_excel',
+        'sharepoint.dest_invalid_excel',
         '1',
         'TEST',
         'sample_artifacts',
@@ -531,7 +562,7 @@ WHEN MATCHED THEN
         multi_file_ingest = '1',
         error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
         process_id = COALESCE(target.process_id, NEWID()),
-        staging_table_name = 'dbo.dest_invalid_excel',
+        staging_table_name = 'sharepoint.dest_invalid_excel',
         is_active = '1',
         ingestion_scope = 'TEST',
         ingestion_domain = 'sample_artifacts',
@@ -578,7 +609,7 @@ WHEN NOT MATCHED THEN
         'NathanChapman@company715.onmicrosoft.com',
         NEWID(),
         'wf-invalid-excel-missing-tabs',
-        'dbo.dest_invalid_excel',
+        'sharepoint.dest_invalid_excel',
         '1',
         'TEST',
         'sample_artifacts',
@@ -606,7 +637,7 @@ WHEN MATCHED THEN
         multi_file_ingest = '1',
         error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
         process_id = COALESCE(target.process_id, NEWID()),
-        staging_table_name = 'dbo.dest_invalid_parquet',
+        staging_table_name = 'sharepoint.dest_invalid_parquet',
         is_active = '1',
         ingestion_scope = 'TEST',
         ingestion_domain = 'sample_artifacts',
@@ -653,7 +684,7 @@ WHEN NOT MATCHED THEN
         'NathanChapman@company715.onmicrosoft.com',
         NEWID(),
         'wf-invalid-parquet-all',
-        'dbo.dest_invalid_parquet',
+        'sharepoint.dest_invalid_parquet',
         '1',
         'TEST',
         'sample_artifacts',
@@ -664,3 +695,5 @@ WHEN NOT MATCHED THEN
         NULL
     );
 GO
+
+

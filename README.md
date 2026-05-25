@@ -62,6 +62,41 @@ and audit-log interpretation, see:
 
 - [`docs/VALIDATION_AND_NOTIFICATION_REFERENCE.md`](docs/VALIDATION_AND_NOTIFICATION_REFERENCE.md)
 
+## Testing reference
+
+For detailed pytest usage guidance (what it covers, when to run it, scenario-based command matrix, and limitations), see:
+
+- [`PYTEST_TESTING_GUIDE.md`](PYTEST_TESTING_GUIDE.md)
+
+## Source → pandas → SQL destination type mapping (CSV / Excel / Parquet)
+
+This is the simplified type reference used when validating source files against SQL destination table columns.
+
+| Source value shape (CSV/Excel/Parquet) | Typical pandas dtype | Recommended SQL destination type(s) |
+|---|---|---|
+| Whole numbers (`1`, `200`, `-5`) | `int64` / `Int64` | `INT`, `BIGINT`, `SMALLINT` |
+| Decimal numbers (`10.5`, `99.99`) | `float64` | `DECIMAL(p,s)`, `NUMERIC(p,s)`, `FLOAT` |
+| True/False flags (`true/false`, `1/0`) | `bool` / `boolean` | `BIT` |
+| Dates only (`2026-05-25`) | `datetime64[ns]` | `DATE` |
+| Date + time (`2026-05-25 14:30:00`) | `datetime64[ns]` | `DATETIME`, `DATETIME2` |
+| Text / codes (`AU`, `CUST001`, free text) | `object` / `string` | `VARCHAR(n)`, `NVARCHAR(n)`, `VARCHAR(MAX)` |
+| UUID-like text | `object` / `string` | `UNIQUEIDENTIFIER` (if strictly UUID), else `VARCHAR` |
+| Binary payloads (rare in these ingestions) | `object` / bytes-like | `VARBINARY` |
+
+### Format notes by source type
+
+- **CSV**: values are read as text first; numeric/date interpretation depends on parsing + normalization.
+- **Excel**: dates may arrive as true Excel date cells *or* text-looking dates. Date-like text is validated/warned.
+- **Parquet**: usually carries stronger native typing, so pandas dtypes are often closest to final SQL types.
+
+### Destination system fields (not expected in source files)
+
+The framework manages these destination fields automatically when present:
+
+- `load_datetime` (`DATETIME`)
+- `__$batch_id` (`INT NULL`)
+- `__$job_instance_id` (`INT NULL`)
+
 ### CLI diagnostics objectives
 
 - `--dry-run` should output issues to screen without email/table logging
@@ -235,7 +270,7 @@ This repo also disables pytest's `.pytest_cache` plugin output by default.
 
 Target control table for upcoming migration updates:
 
-- `dbo.config_sharepoint_ingestion`
+- `config.sharepoint_ingestion`
 
 Including fields such as:
 

@@ -7,6 +7,7 @@ Both functions are stateless — they do not reference engine instance state.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Optional
 
 import pandas as pd
@@ -42,6 +43,9 @@ def apply_ingestion_metadata(
     * ``excel_tab_name`` — set to ``config.excel_tab_name`` for Excel sources,
       only on rows where the column is missing/blank (preserves values already
       populated by ``parse_excel_payload``).
+    * ``load_datetime`` — set to current UTC timestamp for all rows.
+    * ``__$batch_id`` / ``__$job_instance_id`` — reserved system fields,
+      set to ``None`` (NULL) unless upstream orchestration populates them.
 
     Returns the enriched copy.  The original *dataframe* is not mutated.
     """
@@ -81,5 +85,26 @@ def apply_ingestion_metadata(
                 == ""
             )
             enriched.loc[missing_mask, excel_tab_col] = configured_tab_name
+
+    if "load_datetime" in destination_column_names:
+        load_datetime_col = (
+            find_existing_column_name(list(enriched.columns), "load_datetime")
+            or "load_datetime"
+        )
+        enriched[load_datetime_col] = datetime.now(UTC)
+
+    if "__$batch_id" in destination_column_names:
+        batch_id_col = (
+            find_existing_column_name(list(enriched.columns), "__$batch_id")
+            or "__$batch_id"
+        )
+        enriched[batch_id_col] = None
+
+    if "__$job_instance_id" in destination_column_names:
+        job_instance_col = (
+            find_existing_column_name(list(enriched.columns), "__$job_instance_id")
+            or "__$job_instance_id"
+        )
+        enriched[job_instance_col] = None
 
     return enriched

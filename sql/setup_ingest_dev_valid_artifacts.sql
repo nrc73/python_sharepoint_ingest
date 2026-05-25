@@ -20,9 +20,9 @@ BEGIN
 END
 GO
 
-IF OBJECT_ID('dbo.dest_customers', 'U') IS NULL
+IF OBJECT_ID('sharepoint.dest_customers', 'U') IS NULL
 BEGIN
-    CREATE TABLE dbo.dest_customers (
+    CREATE TABLE sharepoint.dest_customers (
         customer_id VARCHAR(20) NOT NULL,
         customer_name VARCHAR(200) NULL,
         signup_date DATE NULL,
@@ -32,42 +32,54 @@ BEGIN
         source_system VARCHAR(50) NULL,
         excel_tab_name VARCHAR(100) NOT NULL,
         source_file_name VARCHAR(255) NULL,
-        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        [__$batch_id] INT NULL,
+        [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_customers PRIMARY KEY (customer_id, excel_tab_name)
     );
 END
 GO
 
-IF COL_LENGTH('dbo.dest_customers', 'sp_ingest_created_utc') IS NULL
-    AND COL_LENGTH('dbo.dest_customers', 'created_date') IS NOT NULL
+IF COL_LENGTH('sharepoint.dest_customers', 'load_datetime') IS NULL
+    AND COL_LENGTH('sharepoint.dest_customers', 'sp_ingest_created_utc') IS NOT NULL
 BEGIN
-    EXEC sp_rename 'dbo.dest_customers.created_date', 'sp_ingest_created_utc', 'COLUMN';
+    EXEC sp_rename 'sharepoint.dest_customers.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
 END
 GO
 
-IF COL_LENGTH('dbo.dest_customers', 'sp_ingest_modified_utc') IS NULL
-    AND COL_LENGTH('dbo.dest_customers', 'modified_date') IS NOT NULL
+IF COL_LENGTH('sharepoint.dest_customers', '__$batch_id') IS NULL
 BEGIN
-    EXEC sp_rename 'dbo.dest_customers.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
+    ALTER TABLE sharepoint.dest_customers ADD [__$batch_id] INT NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_customers', 'excel_tab_name') IS NULL
+IF COL_LENGTH('sharepoint.dest_customers', '__$job_instance_id') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_customers ADD excel_tab_name VARCHAR(100) NULL;
+    ALTER TABLE sharepoint.dest_customers ADD [__$job_instance_id] INT NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_customers', 'source_file_name') IS NULL
+IF COL_LENGTH('sharepoint.dest_customers', 'sp_ingest_modified_utc') IS NOT NULL
 BEGIN
-    ALTER TABLE dbo.dest_customers ADD source_file_name VARCHAR(255) NULL;
+    ALTER TABLE sharepoint.dest_customers DROP COLUMN sp_ingest_modified_utc;
 END
 GO
 
-IF OBJECT_ID('dbo.dest_transactions', 'U') IS NULL
+IF COL_LENGTH('sharepoint.dest_customers', 'excel_tab_name') IS NULL
 BEGIN
-    CREATE TABLE dbo.dest_transactions (
+    ALTER TABLE sharepoint.dest_customers ADD excel_tab_name VARCHAR(100) NULL;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_customers', 'source_file_name') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_customers ADD source_file_name VARCHAR(255) NULL;
+END
+GO
+
+IF OBJECT_ID('sharepoint.dest_transactions', 'U') IS NULL
+BEGIN
+    CREATE TABLE sharepoint.dest_transactions (
         transaction_id VARCHAR(20) NOT NULL,
         customer_id VARCHAR(20) NULL,
         transaction_date DATE NULL,
@@ -75,36 +87,48 @@ BEGIN
         currency VARCHAR(10) NULL,
         status VARCHAR(20) NULL,
         source_file_name VARCHAR(255) NULL,
-        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        [__$batch_id] INT NULL,
+        [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_transactions PRIMARY KEY (transaction_id)
     );
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions', 'sp_ingest_created_utc') IS NULL
-    AND COL_LENGTH('dbo.dest_transactions', 'created_date') IS NOT NULL
+IF COL_LENGTH('sharepoint.dest_transactions', 'load_datetime') IS NULL
+    AND COL_LENGTH('sharepoint.dest_transactions', 'sp_ingest_created_utc') IS NOT NULL
 BEGIN
-    EXEC sp_rename 'dbo.dest_transactions.created_date', 'sp_ingest_created_utc', 'COLUMN';
+    EXEC sp_rename 'sharepoint.dest_transactions.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions', 'sp_ingest_modified_utc') IS NULL
-    AND COL_LENGTH('dbo.dest_transactions', 'modified_date') IS NOT NULL
+IF COL_LENGTH('sharepoint.dest_transactions', '__$batch_id') IS NULL
 BEGIN
-    EXEC sp_rename 'dbo.dest_transactions.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
+    ALTER TABLE sharepoint.dest_transactions ADD [__$batch_id] INT NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions', 'source_file_name') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions', '__$job_instance_id') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions ADD source_file_name VARCHAR(255) NULL;
+    ALTER TABLE sharepoint.dest_transactions ADD [__$job_instance_id] INT NULL;
 END
 GO
 
-IF OBJECT_ID('dbo.dest_transactions_parquet', 'U') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions', 'sp_ingest_modified_utc') IS NOT NULL
 BEGIN
-    CREATE TABLE dbo.dest_transactions_parquet (
+    ALTER TABLE sharepoint.dest_transactions DROP COLUMN sp_ingest_modified_utc;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_transactions', 'source_file_name') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_transactions ADD source_file_name VARCHAR(255) NULL;
+END
+GO
+
+IF OBJECT_ID('sharepoint.dest_transactions_parquet', 'U') IS NULL
+BEGIN
+    CREATE TABLE sharepoint.dest_transactions_parquet (
         transaction_id VARCHAR(20) NOT NULL,
         customer_id VARCHAR(20) NULL,
         transaction_date DATE NULL,
@@ -113,22 +137,23 @@ BEGIN
         status VARCHAR(20) NULL,
         source_system VARCHAR(50) NULL,
         source_file_name VARCHAR(255) NULL,
-        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        [__$batch_id] INT NULL,
+        [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_transactions_parquet PRIMARY KEY (transaction_id)
     );
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_parquet', 'source_file_name') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_parquet', 'source_file_name') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_parquet ADD source_file_name VARCHAR(255) NULL;
+    ALTER TABLE sharepoint.dest_transactions_parquet ADD source_file_name VARCHAR(255) NULL;
 END
 GO
 
-IF OBJECT_ID('dbo.dest_transactions_large', 'U') IS NULL
+IF OBJECT_ID('sharepoint.dest_transactions_large', 'U') IS NULL
 BEGIN
-    CREATE TABLE dbo.dest_transactions_large (
+    CREATE TABLE sharepoint.dest_transactions_large (
         transaction_id VARCHAR(20) NOT NULL,
         customer_id VARCHAR(20) NULL,
         transaction_date DATE NULL,
@@ -150,24 +175,61 @@ BEGIN
         ledger_code VARCHAR(20) NULL,
         comment_text VARCHAR(500) NULL,
         source_file_name VARCHAR(255) NULL,
-        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-        sp_ingest_modified_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        [__$batch_id] INT NULL,
+        [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_transactions_large PRIMARY KEY (transaction_id)
     );
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'sp_ingest_created_utc') IS NULL
-    AND COL_LENGTH('dbo.dest_transactions_large', 'created_date') IS NOT NULL
+IF COL_LENGTH('sharepoint.dest_transactions_parquet', 'load_datetime') IS NULL
+    AND COL_LENGTH('sharepoint.dest_transactions_parquet', 'sp_ingest_created_utc') IS NOT NULL
 BEGIN
-    EXEC sp_rename 'dbo.dest_transactions_large.created_date', 'sp_ingest_created_utc', 'COLUMN';
+    EXEC sp_rename 'sharepoint.dest_transactions_parquet.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'sp_ingest_modified_utc') IS NULL
-    AND COL_LENGTH('dbo.dest_transactions_large', 'modified_date') IS NOT NULL
+IF COL_LENGTH('sharepoint.dest_transactions_parquet', '__$batch_id') IS NULL
 BEGIN
-    EXEC sp_rename 'dbo.dest_transactions_large.modified_date', 'sp_ingest_modified_utc', 'COLUMN';
+    ALTER TABLE sharepoint.dest_transactions_parquet ADD [__$batch_id] INT NULL;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_transactions_parquet', '__$job_instance_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_transactions_parquet ADD [__$job_instance_id] INT NULL;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_transactions_parquet', 'sp_ingest_modified_utc') IS NOT NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_transactions_parquet DROP COLUMN sp_ingest_modified_utc;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'load_datetime') IS NULL
+    AND COL_LENGTH('sharepoint.dest_transactions_large', 'sp_ingest_created_utc') IS NOT NULL
+BEGIN
+    EXEC sp_rename 'sharepoint.dest_transactions_large.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_transactions_large', '__$batch_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_transactions_large ADD [__$batch_id] INT NULL;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_transactions_large', '__$job_instance_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_transactions_large ADD [__$job_instance_id] INT NULL;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'sp_ingest_modified_utc') IS NOT NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_transactions_large DROP COLUMN sp_ingest_modified_utc;
 END
 GO
 
@@ -184,99 +246,105 @@ BEGIN
 END
 GO
 
+IF COL_LENGTH('config.sharepoint_ingestion', 'error_notification_cc_email_address') IS NULL
+BEGIN
+    ALTER TABLE config.sharepoint_ingestion ADD error_notification_cc_email_address VARCHAR(400) NULL;
+END
+GO
+
 IF COL_LENGTH('log.sharepoint_ingestion_audit', 'is_validated') IS NULL
 BEGIN
     ALTER TABLE log.sharepoint_ingestion_audit ADD is_validated BIT NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'source_file_name') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'source_file_name') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD source_file_name VARCHAR(255) NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD source_file_name VARCHAR(255) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'quantity') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'quantity') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD quantity INT NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD quantity INT NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'discount_rate') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'discount_rate') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD discount_rate DECIMAL(9,4) NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD discount_rate DECIMAL(9,4) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'fee_amount') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'fee_amount') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD fee_amount DECIMAL(18,2) NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD fee_amount DECIMAL(18,2) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'tax_amount') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'tax_amount') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD tax_amount DECIMAL(18,2) NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD tax_amount DECIMAL(18,2) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'net_amount') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'net_amount') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD net_amount DECIMAL(18,2) NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD net_amount DECIMAL(18,2) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'channel') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'channel') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD channel VARCHAR(20) NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD channel VARCHAR(20) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'region') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'region') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD region VARCHAR(10) NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD region VARCHAR(10) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'source_system') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'source_system') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD source_system VARCHAR(50) NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD source_system VARCHAR(50) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'batch_id') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'batch_id') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD batch_id VARCHAR(50) NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD batch_id VARCHAR(50) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'event_timestamp') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'event_timestamp') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD event_timestamp DATETIME2 NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD event_timestamp DATETIME2 NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'is_priority') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'is_priority') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD is_priority VARCHAR(1) NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD is_priority VARCHAR(1) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'reference_code') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'reference_code') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD reference_code VARCHAR(50) NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD reference_code VARCHAR(50) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'ledger_code') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'ledger_code') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD ledger_code VARCHAR(20) NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD ledger_code VARCHAR(20) NULL;
 END
 GO
 
-IF COL_LENGTH('dbo.dest_transactions_large', 'comment_text') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'comment_text') IS NULL
 BEGIN
-    ALTER TABLE dbo.dest_transactions_large ADD comment_text VARCHAR(500) NULL;
+    ALTER TABLE sharepoint.dest_transactions_large ADD comment_text VARCHAR(500) NULL;
 END
 GO
 
@@ -302,7 +370,7 @@ WHEN MATCHED THEN
         multi_file_ingest = '1',
         error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
         process_id = COALESCE(target.process_id, NEWID()),
-        staging_table_name = 'dbo.dest_customers',
+        staging_table_name = 'sharepoint.dest_customers',
         is_active = '1',
         ingestion_scope = 'TEST',
         ingestion_domain = 'sample_artifacts',
@@ -349,7 +417,7 @@ WHEN NOT MATCHED THEN
         'NathanChapman@company715.onmicrosoft.com',
         NEWID(),
         'wf-valid-customers',
-        'dbo.dest_customers',
+        'sharepoint.dest_customers',
         '1',
         'TEST',
         'sample_artifacts',
@@ -377,7 +445,7 @@ WHEN MATCHED THEN
         multi_file_ingest = '1',
         error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
         process_id = COALESCE(target.process_id, NEWID()),
-        staging_table_name = 'dbo.dest_transactions',
+        staging_table_name = 'sharepoint.dest_transactions',
         is_active = '1',
         ingestion_scope = 'TEST',
         ingestion_domain = 'sample_artifacts',
@@ -424,7 +492,7 @@ WHEN NOT MATCHED THEN
         'NathanChapman@company715.onmicrosoft.com',
         NEWID(),
         'wf-valid-transactions-standard',
-        'dbo.dest_transactions',
+        'sharepoint.dest_transactions',
         '1',
         'TEST',
         'sample_artifacts',
@@ -452,7 +520,7 @@ WHEN MATCHED THEN
         multi_file_ingest = '1',
         error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
         process_id = COALESCE(target.process_id, NEWID()),
-        staging_table_name = 'dbo.dest_transactions_parquet',
+        staging_table_name = 'sharepoint.dest_transactions_parquet',
         is_active = '1',
         ingestion_scope = 'TEST',
         ingestion_domain = 'sample_artifacts',
@@ -499,7 +567,7 @@ WHEN NOT MATCHED THEN
         'NathanChapman@company715.onmicrosoft.com',
         NEWID(),
         'wf-valid-transactions-parquet',
-        'dbo.dest_transactions_parquet',
+        'sharepoint.dest_transactions_parquet',
         '1',
         'TEST',
         'sample_artifacts',
@@ -527,7 +595,7 @@ WHEN MATCHED THEN
         multi_file_ingest = '0',
         error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
         process_id = COALESCE(target.process_id, NEWID()),
-        staging_table_name = 'dbo.dest_transactions_large',
+        staging_table_name = 'sharepoint.dest_transactions_large',
         is_active = '1',
         ingestion_scope = 'TEST',
         ingestion_domain = 'sample_artifacts',
@@ -574,7 +642,7 @@ WHEN NOT MATCHED THEN
         'NathanChapman@company715.onmicrosoft.com',
         NEWID(),
         'wf-valid-transactions-large',
-        'dbo.dest_transactions_large',
+        'sharepoint.dest_transactions_large',
         '1',
         'TEST',
         'sample_artifacts',
@@ -585,3 +653,6 @@ WHEN NOT MATCHED THEN
         '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status","Quantity":"quantity","DiscountRate":"discount_rate","FeeAmount":"fee_amount","TaxAmount":"tax_amount","NetAmount":"net_amount","Channel":"channel","Region":"region","SourceSystem":"source_system","BatchId":"batch_id","EventTimestamp":"event_timestamp","IsPriority":"is_priority","ReferenceCode":"reference_code","LedgerCode":"ledger_code","CommentText":"comment_text"}'
     );
 GO
+
+
+

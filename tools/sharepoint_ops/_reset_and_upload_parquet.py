@@ -154,9 +154,9 @@ def main() -> int:
     sp = SharePointClient(settings.sharepoint.site_url, cid, cs, tid)
 
     # ── 1. Truncate SQL destination table ────────────────────────────────────
-    print("Truncating dbo.dest_transactions_parquet ...")
+    print("Truncating sharepoint.dest_transactions_parquet ...")
     sql = SqlClient(settings.sql)
-    sql.execute("TRUNCATE TABLE dbo.dest_transactions_parquet")
+    sql.execute("TRUNCATE TABLE sharepoint.dest_transactions_parquet")
     print("  done.")
 
     # ── 2. Clear input folder (partial/old files) ────────────────────────────
@@ -220,3 +220,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

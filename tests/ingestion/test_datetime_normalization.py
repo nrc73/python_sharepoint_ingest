@@ -85,30 +85,32 @@ def test_destination_datetime_columns_excludes_framework_managed_audit_fields() 
     engine = make_engine()
     dest_cols = [
         {"column_name": "signup_date", "data_type": "datetime2"},
-        {"column_name": "sp_ingest_created_utc", "data_type": "datetime2"},
-        {"column_name": "sp_ingest_modified_utc", "data_type": "datetime2"},
+        {"column_name": "load_datetime", "data_type": "datetime2"},
+        {"column_name": "__$batch_id", "data_type": "int"},
+        {"column_name": "__$job_instance_id", "data_type": "int"},
         {"column_name": "customer_id", "data_type": "varchar"},
     ]
 
     result = engine._destination_datetime_columns(dest_cols)
 
     assert "signup_date" in result
-    assert "sp_ingest_created_utc" not in result
-    assert "sp_ingest_modified_utc" not in result
+    assert "load_datetime" not in result
 
 
 def test_detect_excel_datetime_stored_as_text_ignores_framework_managed_audit_fields() -> None:
     engine = make_engine()
     source = pd.DataFrame(
         {
-            "sp_ingest_created_utc": ["01/01/2025", "31/01/2025"],
-            "sp_ingest_modified_utc": ["2025-02-01", "2025-02-02"],
+            "load_datetime": ["01/01/2025", "31/01/2025"],
+            "__$batch_id": [100, 101],
+            "__$job_instance_id": [200, 201],
             "customer_id": ["C1", "C2"],
         }
     )
     dest_cols = [
-        {"column_name": "sp_ingest_created_utc", "data_type": "datetime2"},
-        {"column_name": "sp_ingest_modified_utc", "data_type": "datetime2"},
+        {"column_name": "load_datetime", "data_type": "datetime2"},
+        {"column_name": "__$batch_id", "data_type": "int"},
+        {"column_name": "__$job_instance_id", "data_type": "int"},
         {"column_name": "customer_id", "data_type": "varchar"},
     ]
 

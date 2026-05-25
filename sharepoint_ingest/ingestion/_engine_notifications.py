@@ -57,7 +57,12 @@ def notify_failure(
         memory_peak_mb=memory_peak_mb,
         duration_seconds=duration_seconds,
     )
-    sent = notifier.send(config.error_notification_email_address, subject, body)
+    sent = notifier.send(
+        config.error_notification_email_address,
+        subject,
+        body,
+        cc_addresses=config.error_notification_cc_email_address,
+    )
     if sent:
         logger.info("Failure notification sent to %s", config.error_notification_email_address)
 
@@ -115,7 +120,12 @@ def notify_pk_violation(
         memory_peak_mb=memory_peak_mb,
         duration_seconds=duration_seconds,
     )
-    sent = notifier.send(config.error_notification_email_address, subject, body)
+    sent = notifier.send(
+        config.error_notification_email_address,
+        subject,
+        body,
+        cc_addresses=config.error_notification_cc_email_address,
+    )
     if sent:
         logger.info(
             "PK violation notification sent to %s",
@@ -166,7 +176,12 @@ def _send_validation_notification(
         sheet_name=sheet_name,
         max_issue_lines=15,
     )
-    sent = notifier.send(config.error_notification_email_address, subject, body)
+    sent = notifier.send(
+        config.error_notification_email_address,
+        subject,
+        body,
+        cc_addresses=config.error_notification_cc_email_address,
+    )
     if sent:
         logger.info(
             "Validation notification sent to %s",

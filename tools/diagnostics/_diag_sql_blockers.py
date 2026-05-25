@@ -20,13 +20,13 @@ else:
     print("  (none)")
 
 print()
-print("=== LOCKS on dbo.dest_transactions_large ===")
+print("=== LOCKS on sharepoint.dest_transactions_large ===")
 rows = c.query_rows(
     "SELECT request_session_id, resource_type, resource_description, "
     "request_mode, request_status "
     "FROM sys.dm_tran_locks "
     "WHERE resource_database_id = DB_ID('ingest_dev') "
-    "AND resource_associated_entity_id = OBJECT_ID('dbo.dest_transactions_large')"
+    "AND resource_associated_entity_id = OBJECT_ID('sharepoint.dest_transactions_large')"
 )
 if rows:
     for r in rows:
@@ -59,5 +59,6 @@ for r in rows:
 
 print()
 print("=== dest_transactions_large ROW COUNT ===")
-rows = c.query_rows("SELECT COUNT(1) AS cnt FROM dbo.dest_transactions_large")
+rows = c.query_rows("SELECT COUNT(1) AS cnt FROM sharepoint.dest_transactions_large")
 print("  rows:", rows[0]['cnt'])
+

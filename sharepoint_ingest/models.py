@@ -38,6 +38,7 @@ class IngestionConfig:
     load_strategy: Optional[str] = None
     merge_key_columns: Optional[str] = None
     column_mapping_json: Optional[str] = None
+    error_notification_cc_email_address: Optional[str] = None
 
     @property
     def schema_check_enabled(self) -> bool:

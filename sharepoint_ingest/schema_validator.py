@@ -10,8 +10,9 @@ from sharepoint_ingest.models import ValidationIssue
 
 
 MANAGED_DESTINATION_COLUMNS = {
-    "sp_ingest_created_utc",
-    "sp_ingest_modified_utc",
+    "load_datetime",
+    "__$batch_id",
+    "__$job_instance_id",
 }
 
 

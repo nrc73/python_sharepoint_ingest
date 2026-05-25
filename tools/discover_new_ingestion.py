@@ -21,7 +21,7 @@ Usage (DEV only)
 ----------------
     python tools/discover_new_ingestion.py [--env dev]
                                            [--base-folder PATH]
-                                           [--dest-schema dbo]
+                                           [--dest-schema sharepoint]
                                            [--no-profile]
                                            [--padding 0.20]
 """
@@ -71,6 +71,7 @@ _SYSTEM_COLUMNS_PLAIN = [
     ("sp_ingest_modified_utc",  "DATETIME2(7)",  "NOT NULL  DEFAULT SYSUTCDATETIME()"),
 ]
 _SKIP_FOLDER_NAMES = {"processed", "failed", "archive", "_archive", "_processed", "_failed"}
+_DEFAULT_NOTIFICATION_TO = "NathanChapman@company715.onmicrosoft.com"
 
 # Column name patterns that indicate a good PK candidate (id/no/guid suffix or prefix)
 _PK_NAME_RE = re.compile(
@@ -500,6 +501,8 @@ def _generate_config_insert(
     merge_key_columns: str = "",
     file_name_pattern: str = "",
     ingestion_domain: str = "",
+    error_notification_email_address: str = _DEFAULT_NOTIFICATION_TO,
+    error_notification_cc_email_address: str = "",
 ) -> str:
     def _s(v: str) -> str:
         v = str(v) if v else ""
@@ -524,6 +527,8 @@ def _generate_config_insert(
     [file_name_pattern],
     [load_strategy],
     [merge_key_columns],
+    [error_notification_email_address],
+    [error_notification_cc_email_address],
     [workflow_id]
 ) VALUES (
     {_s(sharepoint_base_url)},
@@ -542,6 +547,8 @@ def _generate_config_insert(
     {_s(file_name_pattern)},
     {_s(load_strategy)},
     {_s(merge_key_columns)},
+    {_s(error_notification_email_address)},
+    {_s(error_notification_cc_email_address)},
     {_s(new_workflow_id)}
 );"""
 
@@ -730,6 +737,8 @@ def _print_group_sql(
     dest_schema: str,
     padding: float,
     all_file_names_in_folder: list[str],
+    notification_to: str,
+    notification_cc: str,
 ) -> None:
     archive_folder = f"{folder_server_relative_url}/Processed"
     failed_folder = f"{folder_server_relative_url}/Failed"
@@ -822,6 +831,8 @@ def _print_group_sql(
             load_strategy=load_strategy,
             merge_key_columns=merge_key,
             file_name_pattern=group.file_name_pattern,
+            error_notification_email_address=notification_to,
+            error_notification_cc_email_address=notification_cc,
         )
     )
     print()
@@ -895,7 +906,7 @@ def _assert_dev_only(env_name: str) -> None:
 def discover(
     env: str | None = None,
     base_folder: str | None = None,
-    dest_schema: str = "dbo",
+    dest_schema: str = "sharepoint",
     no_profile: bool = False,
     padding: float = 0.20,
 ) -> None:
@@ -940,6 +951,16 @@ def discover(
     default_base_url = str(first.get("sharepoint_base_url") or "") if first else ""
     first_folder = str(first.get("sharepoint_process_folder") or "") if first else ""
     default_root = first_folder.rsplit("/", 1)[0] if "/" in first_folder else first_folder
+    default_notification_to = (
+        str(first.get("error_notification_email_address") or "").strip()
+        if first
+        else ""
+    ) or _DEFAULT_NOTIFICATION_TO
+    default_notification_cc = (
+        str(first.get("error_notification_cc_email_address") or "").strip()
+        if first
+        else ""
+    )
 
     # ------------------------------------------------------------------
     # 3. SharePoint connection
@@ -1012,6 +1033,8 @@ def discover(
                 default_base_url=default_base_url,
                 dest_schema=dest_schema,
                 excel_ingest=excel_ingest,
+                notification_to=default_notification_to,
+                notification_cc=default_notification_cc,
             )
             continue
 
@@ -1039,6 +1062,8 @@ def discover(
                 dest_schema=dest_schema,
                 padding=padding,
                 all_file_names_in_folder=file_names,
+                notification_to=default_notification_to,
+                notification_cc=default_notification_cc,
             )
 
     print(f"\n{sep}")
@@ -1046,7 +1071,16 @@ def discover(
     print(sep)
 
 
-def _print_stub(*, sp_folder, files, default_base_url, dest_schema, excel_ingest):
+def _print_stub(
+    *,
+    sp_folder,
+    files,
+    default_base_url,
+    dest_schema,
+    excel_ingest,
+    notification_to: str,
+    notification_cc: str,
+):
     folder_name = sp_folder.name
     safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", folder_name)
     staging_table = f"{dest_schema}.dest_{safe_name}"
@@ -1080,6 +1114,8 @@ CREATE TABLE [{dest_schema}].[dest_{safe_name}] (
             staging_table_name=staging_table,
             excel_tab_name=excel_tab_name_cfg,
             file_name_pattern=_derive_file_pattern(file_names),
+            error_notification_email_address=notification_to,
+            error_notification_cc_email_address=notification_cc,
         )
     )
 
@@ -1095,7 +1131,7 @@ def _parse(argv=None):
     )
     p.add_argument("--env", default="dev", choices=["dev"], help="DEV only (default: dev)")
     p.add_argument("--base-folder", default=None, dest="base_folder")
-    p.add_argument("--dest-schema", default="dbo", dest="dest_schema")
+    p.add_argument("--dest-schema", default="sharepoint", dest="dest_schema")
     p.add_argument("--no-profile", action="store_true", default=False, dest="no_profile")
     p.add_argument("--padding", type=float, default=0.20, dest="padding")
     return p.parse_args(argv)
@@ -1110,3 +1146,4 @@ if __name__ == "__main__":
         no_profile=args.no_profile,
         padding=args.padding,
     )
+

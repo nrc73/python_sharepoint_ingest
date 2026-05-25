@@ -8,6 +8,7 @@ from tools.discover_new_ingestion import (
     _assert_dev_only,
     _build_discovery_groups,
     _configured_folder_keys,
+    _generate_config_insert,
     _same_filename_family,
 )
 
@@ -97,3 +98,36 @@ def test_configured_folder_keys_expands_relative_path_without_leading_slash() ->
     keys = _configured_folder_keys("Documents/valid_customers", "/sites/data_ingest_dev")
     assert "/documents/valid_customers" in keys
     assert "/sites/data_ingest_dev/documents/valid_customers" in keys
+
+
+def test_generate_config_insert_includes_notification_to_and_cc_columns() -> None:
+    sql = _generate_config_insert(
+        sharepoint_base_url="https://example.sharepoint.com/sites/dev",
+        sharepoint_process_folder="/Documents/source",
+        sharepoint_process_archive_folder="/Documents/source/Processed",
+        sharepoint_process_failed_folder="/Documents/source/Failed",
+        staging_table_name="sharepoint.dest_source",
+        error_notification_email_address="ops@example.com",
+        error_notification_cc_email_address="team@example.com;lead@example.com",
+    )
+
+    assert "[error_notification_email_address]" in sql
+    assert "[error_notification_cc_email_address]" in sql
+    assert "N'ops@example.com'" in sql
+    assert "N'team@example.com;lead@example.com'" in sql
+
+
+def test_generate_config_insert_renders_null_cc_when_blank() -> None:
+    sql = _generate_config_insert(
+        sharepoint_base_url="https://example.sharepoint.com/sites/dev",
+        sharepoint_process_folder="/Documents/source",
+        sharepoint_process_archive_folder="/Documents/source/Processed",
+        sharepoint_process_failed_folder="/Documents/source/Failed",
+        staging_table_name="sharepoint.dest_source",
+        error_notification_email_address="ops@example.com",
+        error_notification_cc_email_address="",
+    )
+
+    assert "[error_notification_cc_email_address]" in sql
+    assert ",\n    NULL,\n" in sql
+

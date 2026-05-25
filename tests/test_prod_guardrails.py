@@ -48,7 +48,7 @@ def _cfg(*, scope: str = "REAL", is_test_data: int = 0, workflow_id: str = "wf")
         error_notification_email_address=None,
         process_id=None,
         workflow_id=workflow_id,
-        staging_table_name="dbo.target",
+        staging_table_name="sharepoint.target",
         is_active="1",
         ingestion_scope=scope,
         ingestion_domain=None,
@@ -111,3 +111,4 @@ def test_ingestion_engine_allows_real_rows_in_prod() -> None:
     summary = engine.run(ingestion_scope="real")
     assert summary.files_processed == 0
     assert summary.files_failed == 0
+

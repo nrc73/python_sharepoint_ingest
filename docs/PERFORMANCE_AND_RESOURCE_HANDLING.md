@@ -67,7 +67,7 @@ scenarios and mitigations:
 
 ### 1 — Two workflows writing to the same destination table
 
-If `wf-a` TRUNCATEs `dbo.dest_transactions` while `wf-b` is still inserting into it,
+If `wf-a` TRUNCATEs `sharepoint.dest_transactions` while `wf-b` is still inserting into it,
 `wf-b` will receive a lock wait or deadlock error.
 
 **Mitigation options:**
@@ -109,7 +109,7 @@ WHERE database_id = DB_ID('ingest_dev');
 SELECT request_session_id, resource_type, request_mode, request_status
 FROM sys.dm_tran_locks
 WHERE resource_database_id   = DB_ID('ingest_dev')
-  AND resource_associated_entity_id = OBJECT_ID('dbo.dest_transactions_large');
+  AND resource_associated_entity_id = OBJECT_ID('sharepoint.dest_transactions_large');
 
 -- Kill the blocking session (replace 57 with actual session_id)
 -- KILL 57;
@@ -359,7 +359,7 @@ python tools/diagnostics/_diag_sql_blockers.py
 
 This script reports:
 - Active requests on `ingest_dev` with blocking session IDs and wait types
-- Locks held on `dbo.dest_transactions_large`
+- Locks held on `sharepoint.dest_transactions_large`
 - Open transactions on `ingest_dev`
 - Current destination table row count
 
@@ -387,3 +387,4 @@ For a stuck process (Python alive, 0 CPU, not progressing):
 ---
 
 *Last updated: 2026-05-15*
+

@@ -142,13 +142,18 @@ def test_schema_validator_ignores_managed_destination_columns_for_missing_check(
             "numeric_scale": 2,
         },
         {
-            "column_name": "sp_ingest_created_utc",
+            "column_name": "load_datetime",
             "data_type": "datetime2",
             "character_maximum_length": None,
         },
         {
-            "column_name": "sp_ingest_modified_utc",
-            "data_type": "datetime2",
+            "column_name": "__$batch_id",
+            "data_type": "int",
+            "character_maximum_length": None,
+        },
+        {
+            "column_name": "__$job_instance_id",
+            "data_type": "int",
             "character_maximum_length": None,
         },
     ]
@@ -196,8 +201,9 @@ def test_schema_validator_ignores_framework_managed_fields_when_present_in_sourc
         {
             "transaction_id": ["TXN000001"],
             "amount": [10.5],
-            "sp_ingest_created_utc": ["2026-05-01T00:00:00"],
-            "sp_ingest_modified_utc": ["2026-05-01T00:00:00"],
+            "load_datetime": ["2026-05-01T00:00:00"],
+            "__$batch_id": [123],
+            "__$job_instance_id": [456],
         }
     )
 
@@ -215,13 +221,18 @@ def test_schema_validator_ignores_framework_managed_fields_when_present_in_sourc
             "numeric_scale": 2,
         },
         {
-            "column_name": "sp_ingest_created_utc",
+            "column_name": "load_datetime",
             "data_type": "datetime2",
             "character_maximum_length": None,
         },
         {
-            "column_name": "sp_ingest_modified_utc",
-            "data_type": "datetime2",
+            "column_name": "__$batch_id",
+            "data_type": "int",
+            "character_maximum_length": None,
+        },
+        {
+            "column_name": "__$job_instance_id",
+            "data_type": "int",
             "character_maximum_length": None,
         },
     ]

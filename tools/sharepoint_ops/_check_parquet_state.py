@@ -29,5 +29,6 @@ for folder in [
         print(f"{folder} -> (empty)")
 
 sql = SqlClient(settings.sql)
-rows = sql.query_rows("SELECT COUNT(1) AS cnt FROM dbo.dest_transactions_parquet")
+rows = sql.query_rows("SELECT COUNT(1) AS cnt FROM sharepoint.dest_transactions_parquet")
 print(f"dest_transactions_parquet rows: {rows[0]['cnt']}")
+
