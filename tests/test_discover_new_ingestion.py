@@ -9,6 +9,8 @@ from tools.discover_new_ingestion import (
     _build_discovery_groups,
     _configured_folder_keys,
     _generate_config_insert,
+    _safe_suffix_from_file_name,
+    _snake_case_identifier_fragment,
     _same_filename_family,
 )
 
@@ -130,4 +132,15 @@ def test_generate_config_insert_renders_null_cc_when_blank() -> None:
 
     assert "[error_notification_cc_email_address]" in sql
     assert ",\n    NULL,\n" in sql
+
+
+def test_snake_case_identifier_fragment_converts_camel_and_symbols() -> None:
+    assert _snake_case_identifier_fragment("ValidCustomers", fallback="folder") == "valid_customers"
+    assert _snake_case_identifier_fragment("Valid Customers - AU", fallback="folder") == "valid_customers_au"
+
+
+def test_safe_suffix_from_file_name_returns_snake_case() -> None:
+    assert _safe_suffix_from_file_name("CustomerTale.xlsx") == "customer_tale"
+    assert _safe_suffix_from_file_name("Customer Tale - AU.xlsx") == "customer_tale_au"
+
 

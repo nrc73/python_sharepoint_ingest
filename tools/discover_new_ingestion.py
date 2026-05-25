@@ -615,6 +615,19 @@ def _derive_family_pattern(file_names: list[str]) -> str:
     return f"{stem_glob}{ext}"
 
 
+def _snake_case_identifier_fragment(value: str, *, fallback: str) -> str:
+    """Normalize a free-form name to a safe snake_case SQL identifier fragment."""
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    # Split CamelCase/PascalCase boundaries before punctuation cleanup.
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", text)
+    text = re.sub(r"[^A-Za-z0-9]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_").lower()
+    return text or fallback
+
+
 def _build_profile_candidate(sp, fi) -> _ProfileCandidate | None:
     try:
         raw = sp.download_file_to_bytes(fi.server_relative_url)
@@ -723,8 +736,7 @@ def _build_discovery_groups(candidates: list[_ProfileCandidate]) -> list[_Discov
 
 def _safe_suffix_from_file_name(file_name: str) -> str:
     stem = os.path.splitext(file_name)[0]
-    safe = re.sub(r"[^a-zA-Z0-9_]+", "_", stem).strip("_")
-    return safe or "file"
+    return _snake_case_identifier_fragment(stem, fallback="file")
 
 
 def _print_group_sql(
@@ -1014,7 +1026,7 @@ def discover(
             print(f"      - {fi.name}")
 
         folder_name = sp_folder.name
-        safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", folder_name)
+        safe_name = _snake_case_identifier_fragment(folder_name, fallback="folder")
         file_names = [fi.name for fi in files]
         excel_ingest = all(_is_excel(fi.name) for fi in files)
 
@@ -1082,7 +1094,7 @@ def _print_stub(
     notification_cc: str,
 ):
     folder_name = sp_folder.name
-    safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", folder_name)
+    safe_name = _snake_case_identifier_fragment(folder_name, fallback="folder")
     staging_table = f"{dest_schema}.dest_{safe_name}"
     archive_folder = f"{sp_folder.server_relative_url}/Processed"
     failed_folder = f"{sp_folder.server_relative_url}/Failed"
@@ -1146,4 +1158,5 @@ if __name__ == "__main__":
         no_profile=args.no_profile,
         padding=args.padding,
     )
+
 

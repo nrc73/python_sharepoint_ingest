@@ -20,6 +20,12 @@ BEGIN
 END
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'sharepoint')
+BEGIN
+    EXEC('CREATE SCHEMA [sharepoint] AUTHORIZATION [dbo]');
+END
+GO
+
 IF OBJECT_ID('sharepoint.dest_customers', 'U') IS NULL
 BEGIN
     CREATE TABLE sharepoint.dest_customers (
@@ -252,10 +258,39 @@ BEGIN
 END
 GO
 
+IF COL_LENGTH('config.sharepoint_ingestion', 'to_email_address') IS NULL
+BEGIN
+    ALTER TABLE config.sharepoint_ingestion ADD to_email_address VARCHAR(400) NULL;
+END
+GO
+
+IF COL_LENGTH('config.sharepoint_ingestion', 'cc_email_address') IS NULL
+BEGIN
+    ALTER TABLE config.sharepoint_ingestion ADD cc_email_address VARCHAR(400) NULL;
+END
+GO
+
 IF COL_LENGTH('log.sharepoint_ingestion_audit', 'is_validated') IS NULL
 BEGIN
     ALTER TABLE log.sharepoint_ingestion_audit ADD is_validated BIT NULL;
 END
+GO
+
+UPDATE config.sharepoint_ingestion
+SET
+    to_email_address = COALESCE(NULLIF(LTRIM(RTRIM(to_email_address)), ''), error_notification_email_address),
+    cc_email_address = COALESCE(NULLIF(LTRIM(RTRIM(cc_email_address)), ''), error_notification_cc_email_address),
+    error_notification_email_address = COALESCE(NULLIF(LTRIM(RTRIM(error_notification_email_address)), ''), to_email_address),
+    error_notification_cc_email_address = COALESCE(NULLIF(LTRIM(RTRIM(error_notification_cc_email_address)), ''), cc_email_address),
+    sp_ingest_modified_utc = SYSUTCDATETIME()
+WHERE
+    workflow_id LIKE 'wf-valid-%'
+    AND (
+        (to_email_address IS NULL OR LTRIM(RTRIM(to_email_address)) = '')
+        OR (cc_email_address IS NULL OR LTRIM(RTRIM(cc_email_address)) = '')
+        OR (error_notification_email_address IS NULL OR LTRIM(RTRIM(error_notification_email_address)) = '')
+        OR (error_notification_cc_email_address IS NULL OR LTRIM(RTRIM(error_notification_cc_email_address)) = '')
+    );
 GO
 
 IF COL_LENGTH('sharepoint.dest_transactions_large', 'source_file_name') IS NULL
@@ -653,6 +688,19 @@ WHEN NOT MATCHED THEN
         '{"TransactionId":"transaction_id","CustomerId":"customer_id","TransactionDate":"transaction_date","Amount":"amount","Currency":"currency","Status":"status","Quantity":"quantity","DiscountRate":"discount_rate","FeeAmount":"fee_amount","TaxAmount":"tax_amount","NetAmount":"net_amount","Channel":"channel","Region":"region","SourceSystem":"source_system","BatchId":"batch_id","EventTimestamp":"event_timestamp","IsPriority":"is_priority","ReferenceCode":"reference_code","LedgerCode":"ledger_code","CommentText":"comment_text"}'
     );
 GO
+
+UPDATE config.sharepoint_ingestion
+SET
+    to_email_address = COALESCE(NULLIF(LTRIM(RTRIM(to_email_address)), ''), error_notification_email_address),
+    cc_email_address = COALESCE(NULLIF(LTRIM(RTRIM(cc_email_address)), ''), error_notification_cc_email_address),
+    error_notification_email_address = COALESCE(NULLIF(LTRIM(RTRIM(error_notification_email_address)), ''), to_email_address),
+    error_notification_cc_email_address = COALESCE(NULLIF(LTRIM(RTRIM(error_notification_cc_email_address)), ''), cc_email_address),
+    sp_ingest_modified_utc = SYSUTCDATETIME()
+WHERE workflow_id LIKE 'wf-valid-%';
+GO
+
+
+
 
 
 

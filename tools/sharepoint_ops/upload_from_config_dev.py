@@ -13,6 +13,7 @@ import fnmatch
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import requests as _requests
@@ -53,6 +54,10 @@ def _resolve_folder(site_path: str, configured_folder: str) -> str:
     return f"{site_path.rstrip('/')}{value}".rstrip("/")
 
 
+def _child_folder(parent_folder: str, suffix: str) -> str:
+    return f"{parent_folder.rstrip('/')}/{suffix.strip('/')}"
+
+
 def _delete_file(sp: SharePointClient, file_server_relative_url: str) -> None:
     drive_id, path_in_drive = sp._server_url_to_drive_path(file_server_relative_url)
     meta = sp._get_json(f"{_GRAPH_BASE}/drives/{drive_id}/root:{path_in_drive}:")
@@ -76,8 +81,19 @@ def _upload_file(sp: SharePointClient, local_path: Path, folder_server_relative_
     with local_path.open("rb") as fh:
         data = fh.read()
     timeout_seconds = 1800 if len(data) >= 50 * 1024 * 1024 else 120
-    resp = _requests.put(upload_url, headers=headers, data=data, timeout=timeout_seconds)
-    resp.raise_for_status()
+    last_exc: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            resp = _requests.put(upload_url, headers=headers, data=data, timeout=timeout_seconds)
+            resp.raise_for_status()
+            return
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= 3:
+                break
+            time.sleep(min(8, 2 ** attempt))
+    if last_exc is not None:
+        raise last_exc
 
 
 def _matches_pattern(name: str, pattern: str) -> bool:
@@ -94,10 +110,15 @@ def _matches_pattern(name: str, pattern: str) -> bool:
 
 def _artifact_candidates() -> list[Path]:
     root = PROJECT_ROOT / "tests" / "sample_artifacts"
+    max_file_size_bytes = 250 * 1024 * 1024
     return sorted([
         p
         for p in root.rglob("*")
-        if p.is_file() and p.suffix.lower() in {".csv", ".xlsx", ".xlsm", ".xls", ".parquet"}
+        if (
+            p.is_file()
+            and p.suffix.lower() in {".csv", ".xlsx", ".xlsm", ".xls", ".parquet"}
+            and p.stat().st_size <= max_file_size_bytes
+        )
     ])
 
 
@@ -117,8 +138,22 @@ def main() -> int:
     print(f"Artifact candidates discovered: {len(candidates)}")
 
     folder_map: dict[str, list[Path]] = {}
+    cleanup_folders: set[str] = set()
     for cfg in configs:
         folder = _resolve_folder(sp._site_path, cfg.sharepoint_process_folder)
+        cleanup_folders.add(folder)
+        archive_folder = (cfg.sharepoint_process_archive_folder or "").strip()
+        failed_folder = (cfg.sharepoint_process_failed_folder or "").strip()
+        cleanup_folders.add(
+            _resolve_folder(sp._site_path, archive_folder)
+            if archive_folder
+            else _child_folder(folder, "Processed")
+        )
+        cleanup_folders.add(
+            _resolve_folder(sp._site_path, failed_folder)
+            if failed_folder
+            else _child_folder(folder, "Failed")
+        )
         pattern = (cfg.file_name_pattern or "").strip()
         selected = [p for p in candidates if _matches_pattern(p.name, pattern)]
         folder_map.setdefault(folder, [])
@@ -126,8 +161,8 @@ def main() -> int:
             if p not in folder_map[folder]:
                 folder_map[folder].append(p)
 
-    # clear each configured input folder first
-    for folder in sorted(folder_map.keys()):
+    # clear each configured input/archive/failed folder first
+    for folder in sorted(cleanup_folders):
         existing = sp.list_files(folder)
         print(f"{folder}: clearing {len(existing)} file(s)")
         for item in existing:

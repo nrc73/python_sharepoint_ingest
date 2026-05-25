@@ -11,6 +11,7 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError as SqlIntegrityError
+from sqlalchemy.sql import sqltypes as satypes
 
 from sharepoint_ingest.config import SqlSettings
 from sharepoint_ingest.models import IngestionConfig
@@ -223,7 +224,10 @@ class SqlClient:
             header_skip_rows=int(row.get("header_skip_rows") or 0),
             check_source_dest_columns=row.get("check_source_dest_columns"),
             multi_file_ingest=row.get("multi_file_ingest"),
-            error_notification_email_address=row.get("error_notification_email_address"),
+            error_notification_email_address=(
+                row.get("to_email_address")
+                or row.get("error_notification_email_address")
+            ),
             process_id=process_id,
             workflow_id=row.get("workflow_id"),
             staging_table_name=str(row.get("staging_table_name") or ""),
@@ -235,7 +239,10 @@ class SqlClient:
             load_strategy=row.get("load_strategy"),
             merge_key_columns=row.get("merge_key_columns"),
             column_mapping_json=row.get("column_mapping_json"),
-            error_notification_cc_email_address=row.get("error_notification_cc_email_address"),
+            error_notification_cc_email_address=(
+                row.get("cc_email_address")
+                or row.get("error_notification_cc_email_address")
+            ),
         )
 
     def get_table_columns(self, table_name: str) -> list[dict[str, Any]]:
@@ -417,11 +424,81 @@ class SqlClient:
 
         self.append_load(df, table_name)
 
+    @staticmethod
+    def _normalize_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
+        """Return a copy with timezone-aware datetime columns converted to naive UTC.
+
+        SQL Server DATETIME/DATETIME2 columns do not accept timezone-aware python
+        datetimes directly in our pyodbc path; keeping tz info can lead to string
+        coercion and truncation errors during executemany.
+        """
+        if df.empty:
+            return df
+
+        normalized = df.copy()
+        for col in normalized.columns:
+            series = normalized[col]
+            if pd.api.types.is_datetime64tz_dtype(series):
+                normalized[col] = series.dt.tz_convert("UTC").dt.tz_localize(None)
+        return normalized
+
+    def _build_sqlalchemy_dtype_map(
+        self,
+        table_name: str,
+        dataframe_columns: list[str],
+    ) -> dict[str, satypes.TypeEngine]:
+        """Build a SQLAlchemy dtype map from destination table metadata."""
+        try:
+            table_columns = self.get_table_columns(table_name)
+        except Exception:
+            return {}
+
+        col_meta = {str(c["column_name"]).lower(): c for c in table_columns}
+        dtype_map: dict[str, satypes.TypeEngine] = {}
+
+        for col_name in dataframe_columns:
+            meta = col_meta.get(col_name.lower())
+            if not meta:
+                continue
+
+            data_type = str(meta.get("data_type") or "").lower()
+            char_len = meta.get("character_maximum_length")
+            precision = meta.get("numeric_precision")
+            scale = meta.get("numeric_scale")
+
+            if data_type in {"varchar", "nvarchar", "char", "nchar"}:
+                length = int(char_len) if isinstance(char_len, int) and char_len > 0 else None
+                dtype_map[col_name] = satypes.String(length=length)
+            elif data_type in {"text", "ntext"}:
+                dtype_map[col_name] = satypes.Text()
+            elif data_type in {"datetime", "datetime2", "smalldatetime"}:
+                dtype_map[col_name] = satypes.DateTime(timezone=False)
+            elif data_type == "date":
+                dtype_map[col_name] = satypes.Date()
+            elif data_type == "time":
+                dtype_map[col_name] = satypes.Time()
+            elif data_type in {"decimal", "numeric", "money", "smallmoney"}:
+                p = int(precision) if isinstance(precision, int) and precision > 0 else 18
+                s = int(scale) if isinstance(scale, int) and scale >= 0 else 2
+                dtype_map[col_name] = satypes.Numeric(precision=p, scale=s)
+            elif data_type == "float":
+                dtype_map[col_name] = satypes.Float()
+            elif data_type in {"int", "smallint", "tinyint"}:
+                dtype_map[col_name] = satypes.Integer()
+            elif data_type == "bigint":
+                dtype_map[col_name] = satypes.BigInteger()
+            elif data_type == "bit":
+                dtype_map[col_name] = satypes.Boolean()
+
+        return dtype_map
+
     def append_load(self, df: pd.DataFrame, table_name: str) -> None:
         if df.empty:
             return
 
+        df = self._normalize_datetime_columns(df)
         schema, table = _parse_table_name(table_name)
+        dtype_map = self._build_sqlalchemy_dtype_map(f"{schema}.{table}", list(df.columns))
 
         # Use method=None (SQLAlchemy executemany) so that pyodbc's fast_executemany=True
         # path is exercised.  This is significantly faster than method="multi" for large
@@ -437,6 +514,7 @@ class SqlClient:
                 index=False,
                 chunksize=10_000,
                 method=None,
+                dtype=dtype_map or None,
             )
         except SqlIntegrityError as exc:
             raise ValueError(
@@ -462,6 +540,8 @@ class SqlClient:
         """
         if df.empty:
             return
+        df = self._normalize_datetime_columns(df)
+        dtype_map = self._build_sqlalchemy_dtype_map(f"{schema}.{temp_table}", list(df.columns)) if not first_chunk else {}
         df.to_sql(
             name=temp_table,
             schema=schema,
@@ -470,6 +550,7 @@ class SqlClient:
             index=False,
             chunksize=10_000,
             method=None,
+            dtype=dtype_map or None,
         )
 
     def check_temp_table_for_pk_duplicates(

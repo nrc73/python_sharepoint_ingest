@@ -26,6 +26,12 @@ BEGIN
 END
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'sharepoint')
+BEGIN
+    EXEC('CREATE SCHEMA [sharepoint] AUTHORIZATION [dbo]');
+END
+GO
+
 IF OBJECT_ID('log.sharepoint_ingestion_audit', 'U') IS NULL
 BEGIN
     CREATE TABLE log.sharepoint_ingestion_audit (
@@ -115,6 +121,18 @@ GO
 IF COL_LENGTH('config.sharepoint_ingestion', 'error_notification_cc_email_address') IS NULL
 BEGIN
     ALTER TABLE config.sharepoint_ingestion ADD error_notification_cc_email_address VARCHAR(400) NULL;
+END
+GO
+
+IF COL_LENGTH('config.sharepoint_ingestion', 'to_email_address') IS NULL
+BEGIN
+    ALTER TABLE config.sharepoint_ingestion ADD to_email_address VARCHAR(400) NULL;
+END
+GO
+
+IF COL_LENGTH('config.sharepoint_ingestion', 'cc_email_address') IS NULL
+BEGIN
+    ALTER TABLE config.sharepoint_ingestion ADD cc_email_address VARCHAR(400) NULL;
 END
 GO
 
@@ -695,5 +713,17 @@ WHEN NOT MATCHED THEN
         NULL
     );
 GO
+
+UPDATE config.sharepoint_ingestion
+SET
+    to_email_address = COALESCE(NULLIF(LTRIM(RTRIM(to_email_address)), ''), error_notification_email_address),
+    cc_email_address = COALESCE(NULLIF(LTRIM(RTRIM(cc_email_address)), ''), error_notification_cc_email_address),
+    error_notification_email_address = COALESCE(NULLIF(LTRIM(RTRIM(error_notification_email_address)), ''), to_email_address),
+    error_notification_cc_email_address = COALESCE(NULLIF(LTRIM(RTRIM(error_notification_cc_email_address)), ''), cc_email_address),
+    sp_ingest_modified_utc = SYSUTCDATETIME()
+WHERE workflow_id LIKE 'wf-invalid-%';
+GO
+
+
 
 

@@ -71,6 +71,8 @@ BEGIN
         header_skip_rows INT DEFAULT 0,
         check_source_dest_columns varchar(1),
         multi_file_ingest varchar(1),
+        to_email_address VARCHAR(400) NULL,
+        cc_email_address VARCHAR(400) NULL,
         error_notification_email_address VARCHAR(200) DEFAULT 'NathanChapman@company715.onmicrosoft.com',
         error_notification_cc_email_address VARCHAR(400) NULL,
         process_id UNIQUEIDENTIFIER,
@@ -125,6 +127,18 @@ BEGIN
 END
 GO
 
+IF COL_LENGTH('config.sharepoint_ingestion', 'to_email_address') IS NULL
+BEGIN
+    ALTER TABLE config.sharepoint_ingestion ADD to_email_address VARCHAR(400) NULL;
+END
+GO
+
+IF COL_LENGTH('config.sharepoint_ingestion', 'cc_email_address') IS NULL
+BEGIN
+    ALTER TABLE config.sharepoint_ingestion ADD cc_email_address VARCHAR(400) NULL;
+END
+GO
+
 IF COLUMNPROPERTY(OBJECT_ID('config.sharepoint_ingestion'), 'is_validated', 'ColumnId') IS NULL
     ALTER TABLE config.sharepoint_ingestion ADD is_validated BIT NOT NULL DEFAULT 1;
 GO
@@ -135,6 +149,19 @@ SET ingestion_scope = CASE
         ELSE 'REAL'
     END
 WHERE ingestion_scope IS NULL OR LTRIM(RTRIM(ingestion_scope)) = '';
+GO
+
+UPDATE config.sharepoint_ingestion
+SET
+    to_email_address = COALESCE(NULLIF(LTRIM(RTRIM(to_email_address)), ''), error_notification_email_address),
+    cc_email_address = COALESCE(NULLIF(LTRIM(RTRIM(cc_email_address)), ''), error_notification_cc_email_address),
+    error_notification_email_address = COALESCE(NULLIF(LTRIM(RTRIM(error_notification_email_address)), ''), to_email_address),
+    error_notification_cc_email_address = COALESCE(NULLIF(LTRIM(RTRIM(error_notification_cc_email_address)), ''), cc_email_address)
+WHERE
+    (to_email_address IS NULL OR LTRIM(RTRIM(to_email_address)) = '')
+    OR (cc_email_address IS NULL OR LTRIM(RTRIM(cc_email_address)) = '')
+    OR (error_notification_email_address IS NULL OR LTRIM(RTRIM(error_notification_email_address)) = '')
+    OR (error_notification_cc_email_address IS NULL OR LTRIM(RTRIM(error_notification_cc_email_address)) = '');
 GO
 
 IF OBJECT_ID('log.sharepoint_ingestion_audit', 'U') IS NULL
@@ -270,6 +297,8 @@ BEGIN
         header_skip_rows,
         check_source_dest_columns,
         multi_file_ingest,
+        to_email_address,
+        cc_email_address,
         error_notification_email_address,
         process_id,
         workflow_id,
@@ -293,6 +322,8 @@ BEGIN
         0,
         '1',
         '1',
+        'NathanChapman@company715.onmicrosoft.com',
+        NULL,
         'NathanChapman@company715.onmicrosoft.com',
         NEWID(),
         'workflow-sample-001',
