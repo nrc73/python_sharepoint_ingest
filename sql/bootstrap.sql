@@ -174,7 +174,6 @@ BEGIN
         file_name VARCHAR(255) NULL,
         status VARCHAR(20) NOT NULL,
         records_loaded INT NULL,
-        batch_id UNIQUEIDENTIFIER NULL,
         rows_scanned INT NULL,
         validation_error_count INT NULL,
         memory_peak_mb DECIMAL(18,2) NULL,
@@ -192,9 +191,9 @@ BEGIN
 END
 GO
 
-IF COL_LENGTH('log.sharepoint_ingestion_audit', 'batch_id') IS NULL
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'batch_id') IS NOT NULL
 BEGIN
-    ALTER TABLE log.sharepoint_ingestion_audit ADD batch_id UNIQUEIDENTIFIER NULL;
+    ALTER TABLE log.sharepoint_ingestion_audit DROP COLUMN batch_id;
 END
 GO
 
@@ -252,7 +251,8 @@ BEGIN
         amount DECIMAL(18,2) NULL,
         effective_date DATE NULL,
         source_file_name VARCHAR(255) NULL,
-        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        sp_ingest_load_dt DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        audit_id BIGINT NULL,
         [__$batch_id] INT NULL,
         [__$job_instance_id] INT NULL,
         CONSTRAINT PK_sample_ingestion_target PRIMARY KEY (business_key)
@@ -260,10 +260,16 @@ BEGIN
 END
 GO
 
-IF COL_LENGTH('sharepoint.sample_ingestion_target', 'load_datetime') IS NULL
+IF COL_LENGTH('sharepoint.sample_ingestion_target', 'sp_ingest_load_dt') IS NULL
     AND COL_LENGTH('sharepoint.sample_ingestion_target', 'sp_ingest_created_utc') IS NOT NULL
 BEGIN
-    EXEC sp_rename 'sharepoint.sample_ingestion_target.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
+    EXEC sp_rename 'sharepoint.sample_ingestion_target.sp_ingest_created_utc', 'sp_ingest_load_dt', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('sharepoint.sample_ingestion_target', 'audit_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.sample_ingestion_target ADD audit_id BIGINT NULL;
 END
 GO
 

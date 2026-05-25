@@ -289,7 +289,6 @@ class SqlClient:
         status: str,
         records_loaded: Optional[int],
         message: Optional[str],
-        batch_id: Optional[str] = None,
         rows_scanned: Optional[int] = None,
         validation_error_count: Optional[int] = None,
         memory_peak_mb: Optional[float] = None,
@@ -297,13 +296,18 @@ class SqlClient:
         ingestion_scope: Optional[str] = None,
         ingestion_domain: Optional[str] = None,
         is_test_data: Optional[bool] = None,
-    ) -> None:
+    ) -> Optional[int]:
         sql_text = """
+        DECLARE @new_audit_id BIGINT = NULL;
+
         IF OBJECT_ID('log.sharepoint_ingestion_audit', 'U') IS NOT NULL
         BEGIN
-            IF COL_LENGTH('log.sharepoint_ingestion_audit', 'batch_id') IS NOT NULL
-               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_scope') IS NOT NULL
+            IF COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_scope') IS NOT NULL
                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'is_test_data') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'rows_scanned') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'validation_error_count') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'memory_peak_mb') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'duration_seconds') IS NOT NULL
             BEGIN
                 INSERT INTO log.sharepoint_ingestion_audit (
                     config_id,
@@ -312,7 +316,6 @@ class SqlClient:
                     file_name,
                     status,
                     records_loaded,
-                    batch_id,
                     rows_scanned,
                     validation_error_count,
                     memory_peak_mb,
@@ -329,8 +332,7 @@ class SqlClient:
                     :file_name,
                     :status,
                     :records_loaded,
-                    TRY_CONVERT(uniqueidentifier, :batch_id),
-                    :rows_scanned,
+                    COALESCE(:rows_scanned, 0),
                     :validation_error_count,
                     :memory_peak_mb,
                     :duration_seconds,
@@ -339,8 +341,12 @@ class SqlClient:
                     :is_test_data,
                     :message
                 );
+                SET @new_audit_id = CAST(SCOPE_IDENTITY() AS BIGINT);
             END
-            ELSE IF COL_LENGTH('log.sharepoint_ingestion_audit', 'batch_id') IS NOT NULL
+            ELSE IF COL_LENGTH('log.sharepoint_ingestion_audit', 'rows_scanned') IS NOT NULL
+                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'validation_error_count') IS NOT NULL
+                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'memory_peak_mb') IS NOT NULL
+                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'duration_seconds') IS NOT NULL
             BEGIN
                 INSERT INTO log.sharepoint_ingestion_audit (
                     config_id,
@@ -349,7 +355,6 @@ class SqlClient:
                     file_name,
                     status,
                     records_loaded,
-                    batch_id,
                     rows_scanned,
                     validation_error_count,
                     memory_peak_mb,
@@ -363,13 +368,13 @@ class SqlClient:
                     :file_name,
                     :status,
                     :records_loaded,
-                    TRY_CONVERT(uniqueidentifier, :batch_id),
-                    :rows_scanned,
+                    COALESCE(:rows_scanned, 0),
                     :validation_error_count,
                     :memory_peak_mb,
                     :duration_seconds,
                     :message
                 );
+                SET @new_audit_id = CAST(SCOPE_IDENTITY() AS BIGINT);
             END
             ELSE
             BEGIN
@@ -391,29 +396,123 @@ class SqlClient:
                     :records_loaded,
                     :message
                 );
+                SET @new_audit_id = CAST(SCOPE_IDENTITY() AS BIGINT);
+            END
+        END
+
+        SELECT @new_audit_id AS audit_id;
+        """
+        params = {
+            "config_id": config_id,
+            "workflow_id": workflow_id,
+            "process_id": process_id,
+            "file_name": file_name,
+            "status": status,
+            "records_loaded": records_loaded,
+            "message": message,
+            "rows_scanned": rows_scanned,
+            "validation_error_count": validation_error_count,
+            "memory_peak_mb": memory_peak_mb,
+            "duration_seconds": duration_seconds,
+            "ingestion_scope": ingestion_scope,
+            "ingestion_domain": ingestion_domain,
+            "is_test_data": 1 if is_test_data else 0 if is_test_data is not None else None,
+        }
+
+        with self._engine.begin() as conn:
+            result = conn.execute(text(sql_text), params)
+            row = result.mappings().first()
+
+        if not row:
+            return None
+
+        audit_id = row.get("audit_id")
+        return int(audit_id) if audit_id is not None else None
+
+    def update_audit_record(
+        self,
+        audit_id: int,
+        status: str,
+        records_loaded: Optional[int],
+        message: Optional[str],
+        rows_scanned: Optional[int] = None,
+        validation_error_count: Optional[int] = None,
+        memory_peak_mb: Optional[float] = None,
+        duration_seconds: Optional[float] = None,
+        ingestion_scope: Optional[str] = None,
+        ingestion_domain: Optional[str] = None,
+        is_test_data: Optional[bool] = None,
+    ) -> bool:
+        sql_text = """
+        IF OBJECT_ID('log.sharepoint_ingestion_audit', 'U') IS NOT NULL
+        BEGIN
+            IF COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_scope') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'is_test_data') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'rows_scanned') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'validation_error_count') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'memory_peak_mb') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'duration_seconds') IS NOT NULL
+            BEGIN
+                UPDATE log.sharepoint_ingestion_audit
+                SET
+                    status = :status,
+                    records_loaded = :records_loaded,
+                    rows_scanned = COALESCE(:rows_scanned, 0),
+                    validation_error_count = :validation_error_count,
+                    memory_peak_mb = :memory_peak_mb,
+                    duration_seconds = :duration_seconds,
+                    ingestion_scope = :ingestion_scope,
+                    ingestion_domain = :ingestion_domain,
+                    is_test_data = :is_test_data,
+                    message = :message
+                WHERE audit_id = :audit_id;
+            END
+            ELSE IF COL_LENGTH('log.sharepoint_ingestion_audit', 'rows_scanned') IS NOT NULL
+                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'validation_error_count') IS NOT NULL
+                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'memory_peak_mb') IS NOT NULL
+                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'duration_seconds') IS NOT NULL
+            BEGIN
+                UPDATE log.sharepoint_ingestion_audit
+                SET
+                    status = :status,
+                    records_loaded = :records_loaded,
+                    rows_scanned = COALESCE(:rows_scanned, 0),
+                    validation_error_count = :validation_error_count,
+                    memory_peak_mb = :memory_peak_mb,
+                    duration_seconds = :duration_seconds,
+                    message = :message
+                WHERE audit_id = :audit_id;
+            END
+            ELSE
+            BEGIN
+                UPDATE log.sharepoint_ingestion_audit
+                SET
+                    status = :status,
+                    records_loaded = :records_loaded,
+                    message = :message
+                WHERE audit_id = :audit_id;
             END
         END
         """
-        self.execute(
-            sql_text,
-            {
-                "config_id": config_id,
-                "workflow_id": workflow_id,
-                "process_id": process_id,
-                "file_name": file_name,
-                "status": status,
-                "records_loaded": records_loaded,
-                "message": message,
-                "batch_id": batch_id,
-                "rows_scanned": rows_scanned,
-                "validation_error_count": validation_error_count,
-                "memory_peak_mb": memory_peak_mb,
-                "duration_seconds": duration_seconds,
-                "ingestion_scope": ingestion_scope,
-                "ingestion_domain": ingestion_domain,
-                "is_test_data": 1 if is_test_data else 0 if is_test_data is not None else None,
-            },
-        )
+        params = {
+            "audit_id": audit_id,
+            "status": status,
+            "records_loaded": records_loaded,
+            "message": message,
+            "rows_scanned": rows_scanned,
+            "validation_error_count": validation_error_count,
+            "memory_peak_mb": memory_peak_mb,
+            "duration_seconds": duration_seconds,
+            "ingestion_scope": ingestion_scope,
+            "ingestion_domain": ingestion_domain,
+            "is_test_data": 1 if is_test_data else 0 if is_test_data is not None else None,
+        }
+
+        with self._engine.begin() as conn:
+            result = conn.execute(text(sql_text), params)
+            rowcount = int(result.rowcount or 0)
+
+        return rowcount > 0
 
     def truncate_and_load(self, df: pd.DataFrame, table_name: str) -> None:
         schema, table = _parse_table_name(table_name)
@@ -438,7 +537,7 @@ class SqlClient:
         normalized = df.copy()
         for col in normalized.columns:
             series = normalized[col]
-            if pd.api.types.is_datetime64tz_dtype(series):
+            if isinstance(series.dtype, pd.DatetimeTZDtype):
                 normalized[col] = series.dt.tz_convert("UTC").dt.tz_localize(None)
         return normalized
 

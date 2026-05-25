@@ -38,7 +38,8 @@ BEGIN
         source_system VARCHAR(50) NULL,
         excel_tab_name VARCHAR(100) NOT NULL,
         source_file_name VARCHAR(255) NULL,
-        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        sp_ingest_load_dt DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        audit_id BIGINT NULL,
         [__$batch_id] INT NULL,
         [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_customers PRIMARY KEY (customer_id, excel_tab_name)
@@ -46,10 +47,16 @@ BEGIN
 END
 GO
 
-IF COL_LENGTH('sharepoint.dest_customers', 'load_datetime') IS NULL
+IF COL_LENGTH('sharepoint.dest_customers', 'sp_ingest_load_dt') IS NULL
     AND COL_LENGTH('sharepoint.dest_customers', 'sp_ingest_created_utc') IS NOT NULL
 BEGIN
-    EXEC sp_rename 'sharepoint.dest_customers.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
+    EXEC sp_rename 'sharepoint.dest_customers.sp_ingest_created_utc', 'sp_ingest_load_dt', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_customers', 'audit_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_customers ADD audit_id BIGINT NULL;
 END
 GO
 
@@ -93,7 +100,8 @@ BEGIN
         currency VARCHAR(10) NULL,
         status VARCHAR(20) NULL,
         source_file_name VARCHAR(255) NULL,
-        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        sp_ingest_load_dt DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        audit_id BIGINT NULL,
         [__$batch_id] INT NULL,
         [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_transactions PRIMARY KEY (transaction_id)
@@ -101,10 +109,16 @@ BEGIN
 END
 GO
 
-IF COL_LENGTH('sharepoint.dest_transactions', 'load_datetime') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions', 'sp_ingest_load_dt') IS NULL
     AND COL_LENGTH('sharepoint.dest_transactions', 'sp_ingest_created_utc') IS NOT NULL
 BEGIN
-    EXEC sp_rename 'sharepoint.dest_transactions.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
+    EXEC sp_rename 'sharepoint.dest_transactions.sp_ingest_created_utc', 'sp_ingest_load_dt', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_transactions', 'audit_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_transactions ADD audit_id BIGINT NULL;
 END
 GO
 
@@ -143,7 +157,8 @@ BEGIN
         status VARCHAR(20) NULL,
         source_system VARCHAR(50) NULL,
         source_file_name VARCHAR(255) NULL,
-        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        sp_ingest_load_dt DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        audit_id BIGINT NULL,
         [__$batch_id] INT NULL,
         [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_transactions_parquet PRIMARY KEY (transaction_id)
@@ -181,7 +196,8 @@ BEGIN
         ledger_code VARCHAR(20) NULL,
         comment_text VARCHAR(500) NULL,
         source_file_name VARCHAR(255) NULL,
-        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        sp_ingest_load_dt DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        audit_id BIGINT NULL,
         [__$batch_id] INT NULL,
         [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_transactions_large PRIMARY KEY (transaction_id)
@@ -189,10 +205,16 @@ BEGIN
 END
 GO
 
-IF COL_LENGTH('sharepoint.dest_transactions_parquet', 'load_datetime') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_parquet', 'sp_ingest_load_dt') IS NULL
     AND COL_LENGTH('sharepoint.dest_transactions_parquet', 'sp_ingest_created_utc') IS NOT NULL
 BEGIN
-    EXEC sp_rename 'sharepoint.dest_transactions_parquet.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
+    EXEC sp_rename 'sharepoint.dest_transactions_parquet.sp_ingest_created_utc', 'sp_ingest_load_dt', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_transactions_parquet', 'audit_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_transactions_parquet ADD audit_id BIGINT NULL;
 END
 GO
 
@@ -214,10 +236,16 @@ BEGIN
 END
 GO
 
-IF COL_LENGTH('sharepoint.dest_transactions_large', 'load_datetime') IS NULL
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'sp_ingest_load_dt') IS NULL
     AND COL_LENGTH('sharepoint.dest_transactions_large', 'sp_ingest_created_utc') IS NOT NULL
 BEGIN
-    EXEC sp_rename 'sharepoint.dest_transactions_large.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
+    EXEC sp_rename 'sharepoint.dest_transactions_large.sp_ingest_created_utc', 'sp_ingest_load_dt', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_transactions_large', 'audit_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_transactions_large ADD audit_id BIGINT NULL;
 END
 GO
 
@@ -698,6 +726,7 @@ SET
     sp_ingest_modified_utc = SYSUTCDATETIME()
 WHERE workflow_id LIKE 'wf-valid-%';
 GO
+
 
 
 

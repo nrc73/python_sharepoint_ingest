@@ -35,6 +35,7 @@ def apply_ingestion_metadata(
     destination_columns: list[dict],
     file_name: str,
     source_kind: str,
+    audit_id: Optional[int] = None,
 ) -> pd.DataFrame:
     """Enrich *dataframe* with framework metadata columns when they exist in
     *destination_columns*:
@@ -43,8 +44,10 @@ def apply_ingestion_metadata(
     * ``excel_tab_name`` — set to ``config.excel_tab_name`` for Excel sources,
       only on rows where the column is missing/blank (preserves values already
       populated by ``parse_excel_payload``).
-    * ``load_datetime`` — set to current UTC timestamp for all rows.
-    * ``__$batch_id`` / ``__$job_instance_id`` — reserved system fields,
+    * ``sp_ingest_load_dt`` — set to current UTC timestamp for all rows.
+    * ``audit_id`` — set to the ingestion audit row id for all rows when
+      available.
+    * ``__$job_instance_id`` — reserved system field,
       set to ``None`` (NULL) unless upstream orchestration populates them.
 
     Returns the enriched copy.  The original *dataframe* is not mutated.
@@ -86,19 +89,19 @@ def apply_ingestion_metadata(
             )
             enriched.loc[missing_mask, excel_tab_col] = configured_tab_name
 
-    if "load_datetime" in destination_column_names:
-        load_datetime_col = (
-            find_existing_column_name(list(enriched.columns), "load_datetime")
-            or "load_datetime"
+    if "sp_ingest_load_dt" in destination_column_names:
+        sp_ingest_load_dt_col = (
+            find_existing_column_name(list(enriched.columns), "sp_ingest_load_dt")
+            or "sp_ingest_load_dt"
         )
-        enriched[load_datetime_col] = datetime.now(UTC)
+        enriched[sp_ingest_load_dt_col] = datetime.now(UTC)
 
-    if "__$batch_id" in destination_column_names:
-        batch_id_col = (
-            find_existing_column_name(list(enriched.columns), "__$batch_id")
-            or "__$batch_id"
+    if "audit_id" in destination_column_names:
+        audit_id_col = (
+            find_existing_column_name(list(enriched.columns), "audit_id")
+            or "audit_id"
         )
-        enriched[batch_id_col] = None
+        enriched[audit_id_col] = audit_id
 
     if "__$job_instance_id" in destination_column_names:
         job_instance_col = (

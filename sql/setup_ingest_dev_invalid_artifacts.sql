@@ -58,9 +58,9 @@ BEGIN
 END
 GO
 
-IF COL_LENGTH('log.sharepoint_ingestion_audit', 'batch_id') IS NULL
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'batch_id') IS NOT NULL
 BEGIN
-    ALTER TABLE log.sharepoint_ingestion_audit ADD batch_id UNIQUEIDENTIFIER NULL;
+    ALTER TABLE log.sharepoint_ingestion_audit DROP COLUMN batch_id;
 END
 GO
 
@@ -146,7 +146,8 @@ BEGIN
         currency VARCHAR(10) NULL,
         status VARCHAR(20) NULL,
         source_file_name VARCHAR(255) NULL,
-        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        sp_ingest_load_dt DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        audit_id BIGINT NULL,
         [__$batch_id] INT NULL,
         [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_invalid_csv PRIMARY KEY (transaction_id)
@@ -154,10 +155,16 @@ BEGIN
 END
 GO
 
-IF COL_LENGTH('sharepoint.dest_invalid_csv', 'load_datetime') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_csv', 'sp_ingest_load_dt') IS NULL
     AND COL_LENGTH('sharepoint.dest_invalid_csv', 'sp_ingest_created_utc') IS NOT NULL
 BEGIN
-    EXEC sp_rename 'sharepoint.dest_invalid_csv.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
+    EXEC sp_rename 'sharepoint.dest_invalid_csv.sp_ingest_created_utc', 'sp_ingest_load_dt', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_invalid_csv', 'audit_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_invalid_csv ADD audit_id BIGINT NULL;
 END
 GO
 
@@ -260,7 +267,8 @@ BEGIN
         source_system VARCHAR(50) NULL,
         excel_tab_name VARCHAR(100) NOT NULL,
         source_file_name VARCHAR(255) NULL,
-        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        sp_ingest_load_dt DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        audit_id BIGINT NULL,
         [__$batch_id] INT NULL,
         [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_invalid_excel PRIMARY KEY (customer_id, excel_tab_name)
@@ -268,10 +276,16 @@ BEGIN
 END
 GO
 
-IF COL_LENGTH('sharepoint.dest_invalid_excel', 'load_datetime') IS NULL
+IF COL_LENGTH('sharepoint.dest_invalid_excel', 'sp_ingest_load_dt') IS NULL
     AND COL_LENGTH('sharepoint.dest_invalid_excel', 'sp_ingest_created_utc') IS NOT NULL
 BEGIN
-    EXEC sp_rename 'sharepoint.dest_invalid_excel.sp_ingest_created_utc', 'load_datetime', 'COLUMN';
+    EXEC sp_rename 'sharepoint.dest_invalid_excel.sp_ingest_created_utc', 'sp_ingest_load_dt', 'COLUMN';
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_invalid_excel', 'audit_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_invalid_excel ADD audit_id BIGINT NULL;
 END
 GO
 
@@ -386,11 +400,18 @@ BEGIN
         status VARCHAR(10) NULL,
         source_system VARCHAR(50) NULL,
         source_file_name VARCHAR(255) NULL,
-        load_datetime DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        sp_ingest_load_dt DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        audit_id BIGINT NULL,
         [__$batch_id] INT NULL,
         [__$job_instance_id] INT NULL,
         CONSTRAINT PK_dest_invalid_parquet PRIMARY KEY (transaction_id)
     );
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_invalid_parquet', 'audit_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_invalid_parquet ADD audit_id BIGINT NULL;
 END
 GO
 
@@ -723,6 +744,7 @@ SET
     sp_ingest_modified_utc = SYSUTCDATETIME()
 WHERE workflow_id LIKE 'wf-invalid-%';
 GO
+
 
 
 

@@ -51,7 +51,7 @@ with sql._engine.connect() as conn:
         "FROM INFORMATION_SCHEMA.COLUMNS "
         "WHERE TABLE_NAME IN ('dest_customers','dest_transactions','dest_transactions_parquet',"
         "'dest_transactions_large','dest_invalid_csv','dest_invalid_excel','dest_invalid_parquet') "
-        "AND COLUMN_NAME IN ('load_datetime','status','comment_text','source_file_name') "
+        "AND COLUMN_NAME IN ('sp_ingest_load_dt','status','comment_text','source_file_name') "
         "ORDER BY TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME"
     )).fetchall()
     print("\n=== Key destination column definitions ===")

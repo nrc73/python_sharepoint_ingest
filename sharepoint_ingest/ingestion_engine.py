@@ -346,9 +346,35 @@ class IngestionEngine:
 
         for item in matching_files:
             self._reset_file_telemetry()
-            batch_id = str(uuid.uuid4())
             started = time.perf_counter()
             self._capture_memory_peak_mb()
+            audit_id: Optional[int] = None
+
+            try:
+                audit_id = self.sql_client.insert_audit_record(
+                    config_id=config.id,
+                    workflow_id=config.workflow_id,
+                    process_id=config.process_id,
+                    file_name=item.name,
+                    status="STARTED",
+                    records_loaded=None,
+                    message=None,
+                    rows_scanned=0,
+                    validation_error_count=0,
+                    memory_peak_mb=self._capture_memory_peak_mb(),
+                    duration_seconds=None,
+                    ingestion_scope=config.ingestion_scope,
+                    ingestion_domain=config.ingestion_domain,
+                    is_test_data=config.test_data_enabled,
+                )
+            except Exception:
+                self.logger.warning(
+                    "Config id=%s could not create STARTED audit row for file %s",
+                    config.id,
+                    item.name,
+                    exc_info=True,
+                )
+
             try:
                 row_count = self._process_single_file(
                     config,
@@ -356,48 +382,113 @@ class IngestionEngine:
                     item.name,
                     archive_folder=archive_folder,
                     force_append=force_append_for_selected_files,
+                    audit_id=audit_id,
                 )
                 result.files_processed += 1
                 result.rows_loaded += row_count
-                self.sql_client.insert_audit_record(
-                    config_id=config.id,
-                    workflow_id=config.workflow_id,
-                    process_id=config.process_id,
-                    file_name=item.name,
-                    status="SUCCESS",
-                    records_loaded=row_count,
-                    message=None,
-                    batch_id=batch_id,
-                    rows_scanned=self._last_file_rows_scanned,
-                    validation_error_count=self._last_file_validation_error_count,
-                    memory_peak_mb=self._capture_memory_peak_mb(),
-                    duration_seconds=round(time.perf_counter() - started, 2),
-                    ingestion_scope=config.ingestion_scope,
-                    ingestion_domain=config.ingestion_domain,
-                    is_test_data=config.test_data_enabled,
-                )
+
+                if audit_id is not None:
+                    updated = self.sql_client.update_audit_record(
+                        audit_id=audit_id,
+                        status="SUCCESS",
+                        records_loaded=int(row_count or 0),
+                        message=None,
+                        rows_scanned=self._last_file_rows_scanned or 0,
+                        validation_error_count=self._last_file_validation_error_count,
+                        memory_peak_mb=self._capture_memory_peak_mb(),
+                        duration_seconds=round(time.perf_counter() - started, 2),
+                        ingestion_scope=config.ingestion_scope,
+                        ingestion_domain=config.ingestion_domain,
+                        is_test_data=config.test_data_enabled,
+                    )
+                    if not updated:
+                        self.sql_client.insert_audit_record(
+                            config_id=config.id,
+                            workflow_id=config.workflow_id,
+                            process_id=config.process_id,
+                            file_name=item.name,
+                            status="SUCCESS",
+                            records_loaded=int(row_count or 0),
+                            message=None,
+                            rows_scanned=self._last_file_rows_scanned or 0,
+                            validation_error_count=self._last_file_validation_error_count,
+                            memory_peak_mb=self._capture_memory_peak_mb(),
+                            duration_seconds=round(time.perf_counter() - started, 2),
+                            ingestion_scope=config.ingestion_scope,
+                            ingestion_domain=config.ingestion_domain,
+                            is_test_data=config.test_data_enabled,
+                        )
+                else:
+                    self.sql_client.insert_audit_record(
+                        config_id=config.id,
+                        workflow_id=config.workflow_id,
+                        process_id=config.process_id,
+                        file_name=item.name,
+                        status="SUCCESS",
+                        records_loaded=int(row_count or 0),
+                        message=None,
+                        rows_scanned=self._last_file_rows_scanned or 0,
+                        validation_error_count=self._last_file_validation_error_count,
+                        memory_peak_mb=self._capture_memory_peak_mb(),
+                        duration_seconds=round(time.perf_counter() - started, 2),
+                        ingestion_scope=config.ingestion_scope,
+                        ingestion_domain=config.ingestion_domain,
+                        is_test_data=config.test_data_enabled,
+                    )
             except Exception as exc:  # pragma: no cover - integration path
                 err = f"Config {config.id} failed for file {item.name}: {exc}"
                 self.logger.exception(err)
                 result.errors.append(err)
                 result.files_failed += 1
-                self.sql_client.insert_audit_record(
-                    config_id=config.id,
-                    workflow_id=config.workflow_id,
-                    process_id=config.process_id,
-                    file_name=item.name,
-                    status="FAILED",
-                    records_loaded=None,
-                    message=err,
-                    batch_id=batch_id,
-                    rows_scanned=self._last_file_rows_scanned,
-                    validation_error_count=self._last_file_validation_error_count,
-                    memory_peak_mb=self._capture_memory_peak_mb(),
-                    duration_seconds=round(time.perf_counter() - started, 2),
-                    ingestion_scope=config.ingestion_scope,
-                    ingestion_domain=config.ingestion_domain,
-                    is_test_data=config.test_data_enabled,
-                )
+
+                if audit_id is not None:
+                    updated = self.sql_client.update_audit_record(
+                        audit_id=audit_id,
+                        status="FAILED",
+                        records_loaded=None,
+                        message=err,
+                        rows_scanned=self._last_file_rows_scanned or 0,
+                        validation_error_count=self._last_file_validation_error_count,
+                        memory_peak_mb=self._capture_memory_peak_mb(),
+                        duration_seconds=round(time.perf_counter() - started, 2),
+                        ingestion_scope=config.ingestion_scope,
+                        ingestion_domain=config.ingestion_domain,
+                        is_test_data=config.test_data_enabled,
+                    )
+                    if not updated:
+                        self.sql_client.insert_audit_record(
+                            config_id=config.id,
+                            workflow_id=config.workflow_id,
+                            process_id=config.process_id,
+                            file_name=item.name,
+                            status="FAILED",
+                            records_loaded=None,
+                            message=err,
+                            rows_scanned=self._last_file_rows_scanned or 0,
+                            validation_error_count=self._last_file_validation_error_count,
+                            memory_peak_mb=self._capture_memory_peak_mb(),
+                            duration_seconds=round(time.perf_counter() - started, 2),
+                            ingestion_scope=config.ingestion_scope,
+                            ingestion_domain=config.ingestion_domain,
+                            is_test_data=config.test_data_enabled,
+                        )
+                else:
+                    self.sql_client.insert_audit_record(
+                        config_id=config.id,
+                        workflow_id=config.workflow_id,
+                        process_id=config.process_id,
+                        file_name=item.name,
+                        status="FAILED",
+                        records_loaded=None,
+                        message=err,
+                        rows_scanned=self._last_file_rows_scanned or 0,
+                        validation_error_count=self._last_file_validation_error_count,
+                        memory_peak_mb=self._capture_memory_peak_mb(),
+                        duration_seconds=round(time.perf_counter() - started, 2),
+                        ingestion_scope=config.ingestion_scope,
+                        ingestion_domain=config.ingestion_domain,
+                        is_test_data=config.test_data_enabled,
+                    )
                 if failed_folder:
                     try:
                         self.sharepoint_client.move_file(
@@ -435,6 +526,7 @@ class IngestionEngine:
         file_name: str,
         archive_folder: Optional[str] = None,
         force_append: bool = False,
+        audit_id: Optional[int] = None,
     ) -> int:
         lower_name = file_name.lower()
         source_kind = self._resolve_source_kind(file_name)
@@ -449,6 +541,7 @@ class IngestionEngine:
                 config, server_relative_url, file_name,
                 archive_folder=archive_folder,
                 load_strategy=resolved_load_strategy,
+                audit_id=audit_id,
             )
 
         if lower_name.endswith(".parquet") and getattr(
@@ -458,6 +551,7 @@ class IngestionEngine:
                 config, server_relative_url, file_name,
                 archive_folder=archive_folder,
                 load_strategy=resolved_load_strategy,
+                audit_id=audit_id,
             )
 
         payload = self.sharepoint_client.download_file_to_bytes(server_relative_url)
@@ -470,6 +564,7 @@ class IngestionEngine:
             destination_columns=destination_columns,
             file_name=file_name,
             source_kind=source_kind,
+            audit_id=audit_id,
         )
         self._set_rows_scanned(len(dataframe))
         self._log_phase_progress(
@@ -525,6 +620,7 @@ class IngestionEngine:
         file_name: str,
         archive_folder: Optional[str] = None,
         load_strategy: Optional[str] = None,
+        audit_id: Optional[int] = None,
     ) -> int:
         buffer = self.sharepoint_client.download_file_to_buffer(server_relative_url)
         self._capture_memory_peak_mb()
@@ -558,6 +654,7 @@ class IngestionEngine:
                 destination_columns=destination_columns,
                 file_name=file_name,
                 source_kind="csv",
+                audit_id=audit_id,
             )
             dataframe = self._normalize_dataframe(
                 dataframe, source_kind="csv", destination_columns=destination_columns
@@ -634,6 +731,7 @@ class IngestionEngine:
         file_name: str,
         archive_folder: Optional[str] = None,
         load_strategy: Optional[str] = None,
+        audit_id: Optional[int] = None,
     ) -> int:
         """Stream-ingest a Parquet file via HTTP range requests in a single pass.
 
@@ -724,6 +822,7 @@ class IngestionEngine:
                     destination_columns=destination_columns,
                     file_name=file_name,
                     source_kind="parquet",
+                    audit_id=audit_id,
                 )
                 dataframe = self._normalize_dataframe(
                     dataframe, source_kind="parquet",
@@ -893,10 +992,11 @@ class IngestionEngine:
         destination_columns: list[dict],
         file_name: str,
         source_kind: str,
+        audit_id: Optional[int] = None,
     ) -> pd.DataFrame:
         """Delegate to :func:`~sharepoint_ingest.ingestion._metadata.apply_ingestion_metadata`."""
         return apply_ingestion_metadata(
-            dataframe, config, destination_columns, file_name, source_kind
+            dataframe, config, destination_columns, file_name, source_kind, audit_id
         )
 
     # ── normalisation & validation ────────────────────────────────────────────
@@ -1075,5 +1175,7 @@ class IngestionEngine:
     ) -> Optional[str]:
         """Delegate to :func:`~sharepoint_ingest.ingestion._notification_helpers.extract_sheet_name_from_issues`."""
         return extract_sheet_name_from_issues(issues)
+
+
 
 

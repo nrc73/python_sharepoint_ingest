@@ -93,7 +93,7 @@ This is the simplified type reference used when validating source files against 
 
 The framework manages these destination fields automatically when present:
 
-- `load_datetime` (`DATETIME`)
+- `sp_ingest_load_dt` (`DATETIME`)
 - `__$batch_id` (`INT NULL`)
 - `__$job_instance_id` (`INT NULL`)
 

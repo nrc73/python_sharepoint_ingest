@@ -64,6 +64,7 @@ class DummySqlClient:
 
     def __init__(self):
         self.calls: list[tuple] = []
+        self._next_audit_id = 1
 
     def truncate_and_load(self, df: pd.DataFrame, table_name: str) -> None:
         self.calls.append(("truncate_and_load", len(df)))
@@ -96,7 +97,14 @@ class DummySqlClient:
         return []
 
     def insert_audit_record(self, **kwargs):
-        return None
+        audit_id = self._next_audit_id
+        self._next_audit_id += 1
+        self.calls.append(("insert_audit_record", kwargs.get("status"), audit_id))
+        return audit_id
+
+    def update_audit_record(self, **kwargs):
+        self.calls.append(("update_audit_record", kwargs.get("status"), kwargs.get("audit_id")))
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -179,4 +187,6 @@ def make_engine(
         sp or DummySharePointClient(payload),
         logging.getLogger(logger_name),
     )
+
+
 

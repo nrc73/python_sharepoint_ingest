@@ -106,19 +106,20 @@ def test_apply_ingestion_metadata_sets_new_system_fields_when_present_in_destina
     dest_cols = [
         {"column_name": "transaction_id", "data_type": "varchar"},
         {"column_name": "amount", "data_type": "decimal"},
-        {"column_name": "load_datetime", "data_type": "datetime"},
-        {"column_name": "__$batch_id", "data_type": "int"},
+        {"column_name": "sp_ingest_load_dt", "data_type": "datetime"},
+        {"column_name": "audit_id", "data_type": "bigint"},
         {"column_name": "__$job_instance_id", "data_type": "int"},
     ]
 
     enriched = engine._apply_ingestion_metadata(
         source, config, destination_columns=dest_cols,
         file_name="valid_transactions_001.csv", source_kind="csv",
+        audit_id=98765,
     )
 
-    assert "load_datetime" in enriched.columns
-    assert "__$batch_id" in enriched.columns
+    assert "sp_ingest_load_dt" in enriched.columns
+    assert "audit_id" in enriched.columns
     assert "__$job_instance_id" in enriched.columns
-    assert pd.notna(enriched.loc[0, "load_datetime"])
-    assert enriched.loc[0, "__$batch_id"] is None
+    assert pd.notna(enriched.loc[0, "sp_ingest_load_dt"])
+    assert enriched.loc[0, "audit_id"] == 98765
     assert enriched.loc[0, "__$job_instance_id"] is None
