@@ -60,7 +60,12 @@ def test_intra_file_duplicate_keys_raise_before_sql_on_append() -> None:
 
 
 def test_chunked_csv_intra_file_duplicate_keys_caught_on_first_chunk() -> None:
-    """Duplicate key detection fires on the first chunk, preventing any SQL write."""
+    """Within-chunk duplicate detection fires before any SQL write.
+
+    All 5 data rows fit in chunk 1 (chunk_size=5).  id=1 appears twice within
+    that chunk, so the within-chunk duplicate check catches it and raises before
+    append_load is called.
+    """
     payload = b"id,value\n1,a\n1,b\n2,c\n3,d\n4,e\n"
     sql = DummySqlClient()
     sp = DummySharePointClient(payload)
@@ -70,6 +75,46 @@ def test_chunked_csv_intra_file_duplicate_keys_caught_on_first_chunk() -> None:
         engine._process_single_file(make_config("APPEND"), "/folder/file.csv", "file.csv")
 
     assert not any(call[0] in ("append_load", "truncate_and_load") for call in sql.calls)
+
+
+def test_chunked_csv_cross_chunk_duplicate_key_detected_before_second_chunk_loads() -> None:
+    """A key value seen in chunk 1 that reappears in chunk 2 is caught before chunk 2 loads.
+
+    chunk 1: id=1, id=2  (unique — loaded)
+    chunk 2: id=2, id=3  (id=2 is a cross-chunk duplicate — raises before load)
+    """
+    payload = b"id,value\n1,a\n2,b\n2,c\n3,d\n"
+    sql = DummySqlClient()
+    sp = DummySharePointClient(payload)
+    engine = IngestionEngine(make_settings(chunked=True, chunk_size=2), sql, sp, logging.getLogger("test"))
+
+    with pytest.raises(ValueError, match="PRIMARY_KEY_VIOLATION"):
+        engine._process_single_file(make_config("APPEND"), "/folder/file.csv", "file.csv")
+
+    load_calls = [(c[0], c[1]) for c in sql.calls if c[0] in ("append_load", "truncate_and_load")]
+    # Chunk 1 (2 rows, unique) is loaded; chunk 2 is blocked before its load call.
+    assert len(load_calls) == 1
+    assert load_calls[0] == ("append_load", 2)
+
+
+def test_chunked_csv_within_later_chunk_duplicate_key_detected_before_that_chunk_loads() -> None:
+    """Duplicate keys within chunk 2 (not present in chunk 1) are caught before chunk 2 loads.
+
+    chunk 1: id=1, id=2  (unique — loaded)
+    chunk 2: id=3, id=3  (within-chunk dup — raises before load)
+    """
+    payload = b"id,value\n1,a\n2,b\n3,c\n3,d\n"
+    sql = DummySqlClient()
+    sp = DummySharePointClient(payload)
+    engine = IngestionEngine(make_settings(chunked=True, chunk_size=2), sql, sp, logging.getLogger("test"))
+
+    with pytest.raises(ValueError, match="PRIMARY_KEY_VIOLATION"):
+        engine._process_single_file(make_config("APPEND"), "/folder/file.csv", "file.csv")
+
+    load_calls = [(c[0], c[1]) for c in sql.calls if c[0] in ("append_load", "truncate_and_load")]
+    # Chunk 1 (2 rows, all unique) is loaded; chunk 2 is blocked before its load call.
+    assert len(load_calls) == 1
+    assert load_calls[0] == ("append_load", 2)
 
 
 def test_notify_pk_violation_builds_dedicated_subject_and_remediation_body() -> None:

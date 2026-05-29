@@ -84,6 +84,18 @@ BEGIN
 END
 GO
 
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'destination_database') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD destination_database VARCHAR(128) NULL;
+END
+GO
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'destination_table') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD destination_table VARCHAR(300) NULL;
+END
+GO
+
 DELETE FROM log.sharepoint_ingestion_audit;
 GO
 
@@ -121,6 +133,10 @@ GO
 IF OBJECT_ID('sharepoint.sample_ingestion_target', 'U') IS NOT NULL
     TRUNCATE TABLE sharepoint.sample_ingestion_target;
 GO
+
+
+
+
 
 
 

@@ -72,6 +72,7 @@ _SYSTEM_COLUMNS_PLAIN = [
 ]
 _SKIP_FOLDER_NAMES = {"processed", "failed", "archive", "_archive", "_processed", "_failed"}
 _DEFAULT_NOTIFICATION_TO = "NathanChapman@company715.onmicrosoft.com"
+_DEFAULT_DEST_SCHEMA = "staging"
 
 # Column name patterns that indicate a good PK candidate (id/no/guid suffix or prefix)
 _PK_NAME_RE = re.compile(
@@ -490,6 +491,7 @@ def _generate_config_insert(
     sharepoint_process_archive_folder: str,
     sharepoint_process_failed_folder: str,
     staging_table_name: str,
+    integrated_table_name: str = "",
     excel_tab_name: str = "",
     process_frequency: str = "DAILY",
     header_skip_rows: int = 0,
@@ -499,14 +501,31 @@ def _generate_config_insert(
     ingestion_scope: str = "REAL",
     load_strategy: str = "TRUNCATE",
     merge_key_columns: str = "",
+    column_mapping_json: str = "{}",
     file_name_pattern: str = "",
-    ingestion_domain: str = "",
-    error_notification_email_address: str = _DEFAULT_NOTIFICATION_TO,
+    # New field names (old names kept as aliases for call-site compat)
+    to_email_address: str = _DEFAULT_NOTIFICATION_TO,
+    cc_email_address: str = "",
+    # Legacy aliases — forwarded to the new field names
+    error_notification_email_address: str = "",
     error_notification_cc_email_address: str = "",
 ) -> str:
     def _s(v: str) -> str:
         v = str(v) if v else ""
         return "NULL" if not v else f"N'{v.replace(chr(39), chr(39)*2)}'"
+
+    # Merge legacy aliases (caller may use either name)
+    resolved_to = to_email_address or error_notification_email_address or _DEFAULT_NOTIFICATION_TO
+    resolved_cc = cc_email_address or error_notification_cc_email_address
+    resolved_column_mapping_json = (
+        str(column_mapping_json).strip() if column_mapping_json is not None else ""
+    )
+    if not resolved_column_mapping_json:
+        resolved_column_mapping_json = "{}"
+
+    # For the integrated table, derive from staging if not supplied:
+    # staging: staging.dest_X  →  integrated: staging.dest_X  (same schema/name, different DB)
+    resolved_int = integrated_table_name or staging_table_name
 
     new_workflow_id = f"wf-{staging_table_name.split('.')[-1].replace('_', '-').lower()}-{uuid.uuid4().hex[:8]}"
 
@@ -521,14 +540,15 @@ def _generate_config_insert(
     [check_source_dest_columns],
     [multi_file_ingest],
     [staging_table_name],
+    [integrated_table_name],
     [is_active],
     [ingestion_scope],
-    [ingestion_domain],
     [file_name_pattern],
     [load_strategy],
     [merge_key_columns],
-    [error_notification_email_address],
-    [error_notification_cc_email_address],
+    [column_mapping_json],
+    [to_email_address],
+    [cc_email_address],
     [workflow_id]
 ) VALUES (
     {_s(sharepoint_base_url)},
@@ -541,14 +561,15 @@ def _generate_config_insert(
     {check_source_dest_columns},
     {multi_file_ingest},
     {_s(staging_table_name)},
+    {_s(resolved_int)},
     {is_active},
     {_s(ingestion_scope)},
-    {_s(ingestion_domain)},
     {_s(file_name_pattern)},
     {_s(load_strategy)},
     {_s(merge_key_columns)},
-    {_s(error_notification_email_address)},
-    {_s(error_notification_cc_email_address)},
+    {_s(resolved_column_mapping_json)},
+    {_s(resolved_to)},
+    {_s(resolved_cc)},
     {_s(new_workflow_id)}
 );"""
 
@@ -915,6 +936,31 @@ def _assert_dev_only(env_name: str) -> None:
         )
 
 
+def _list_folders_to_depth(sp: SharePointClient, root_folder: str, max_depth: int = 3) -> list:
+    """Return folder items under *root_folder* up to ``max_depth`` levels deep.
+
+    Depth semantics:
+    - depth=1 → direct children of ``root_folder``
+    - depth=2 → includes grandchildren
+    - depth=3 → includes great-grandchildren
+    """
+    if max_depth <= 0:
+        return []
+
+    discovered: list = []
+    frontier: list[tuple[str, int]] = [(root_folder, 1)]
+
+    while frontier:
+        current_folder, depth = frontier.pop(0)
+        child_folders = sp.list_folders(current_folder)
+        discovered.extend(child_folders)
+
+        if depth < max_depth:
+            frontier.extend((folder.server_relative_url, depth + 1) for folder in child_folders)
+
+    return discovered
+
+
 def discover(
     env: str | None = None,
     base_folder: str | None = None,
@@ -963,13 +1009,14 @@ def discover(
     default_base_url = str(first.get("sharepoint_base_url") or "") if first else ""
     first_folder = str(first.get("sharepoint_process_folder") or "") if first else ""
     default_root = first_folder.rsplit("/", 1)[0] if "/" in first_folder else first_folder
+    # Support both new (to_email_address/cc_email_address) and old column names
     default_notification_to = (
-        str(first.get("error_notification_email_address") or "").strip()
+        str(first.get("to_email_address") or first.get("error_notification_email_address") or "").strip()
         if first
         else ""
     ) or _DEFAULT_NOTIFICATION_TO
     default_notification_cc = (
-        str(first.get("error_notification_cc_email_address") or "").strip()
+        str(first.get("cc_email_address") or first.get("error_notification_cc_email_address") or "").strip()
         if first
         else ""
     )
@@ -991,8 +1038,8 @@ def discover(
     # ------------------------------------------------------------------
     print(f"\n[4/5] Listing sub-folders under: {scan_root}")
     print("      (metadata-only — no file downloads)")
-    sp_folders = sp.list_folders(scan_root)
-    print(f"      Found {len(sp_folders)} sub-folder(s).")
+    sp_folders = _list_folders_to_depth(sp, scan_root, max_depth=3)
+    print(f"      Found {len(sp_folders)} sub-folder(s) up to depth 3.")
 
     new_folders = [
         f for f in sp_folders
@@ -1143,7 +1190,7 @@ def _parse(argv=None):
     )
     p.add_argument("--env", default="dev", choices=["dev"], help="DEV only (default: dev)")
     p.add_argument("--base-folder", default=None, dest="base_folder")
-    p.add_argument("--dest-schema", default="sharepoint", dest="dest_schema")
+    p.add_argument("--dest-schema", default=_DEFAULT_DEST_SCHEMA, dest="dest_schema")
     p.add_argument("--no-profile", action="store_true", default=False, dest="no_profile")
     p.add_argument("--padding", type=float, default=0.20, dest="padding")
     return p.parse_args(argv)
@@ -1158,5 +1205,7 @@ if __name__ == "__main__":
         no_profile=args.no_profile,
         padding=args.padding,
     )
+
+
 
 

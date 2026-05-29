@@ -31,9 +31,18 @@ class SqlSettings:
 class KeyVaultSettings:
     vault_name: str
     vault_url: str
+    # SharePoint App Registration secrets
     client_id_secret_name: str
     client_secret_secret_name: str
     tenant_id_secret_name: str
+    # SharePoint site URL secret (optional – resolved from env var if absent)
+    site_url_secret_name: Optional[str]
+    # SQL server / database name secrets (resolved from KV when present)
+    sql_server_secret_name: Optional[str]
+    sql_int_database_secret_name: Optional[str]
+    sql_stg_database_secret_name: Optional[str]
+    sql_aud_database_secret_name: Optional[str]
+    # Legacy SQL credential secrets
     sql_username_secret_name: Optional[str]
     sql_password_secret_name: Optional[str]
 
@@ -68,19 +77,55 @@ class AppSettings:
     ingest_chunk_size_rows: int
     azure_subscription_id: Optional[str]
     azure_resource_group: Optional[str]
+    # Primary SQL connection → audit DB (config + log tables)
     sql: SqlSettings
+    # Staging DB — data is always TRUNCATE-loaded here first
+    sql_stg: SqlSettings
+    # Integrated DB — data is promoted here per load_strategy after staging
+    sql_int: SqlSettings
     key_vault: KeyVaultSettings
     sharepoint: SharePointSettings
     email: EmailSettings
 
 
-def _database_for_env(env_name: str) -> str:
+# ---------------------------------------------------------------------------
+# Per-environment database name helpers
+# ---------------------------------------------------------------------------
+
+def _int_database_for_env(env_name: str) -> str:
+    """Return the *integrated* (destination) DB name for the given environment."""
     env_name = env_name.lower().strip()
     if env_name == "dev":
-        return os.getenv("SQL_DATABASE_DEV", "ingest_dev")
+        return os.getenv("SQL_DATABASE_INT_DEV", "ingest_int_dev")
     if env_name == "test":
-        return os.getenv("SQL_DATABASE_TEST", "ingest_test")
-    return os.getenv("SQL_DATABASE_PROD", "ingest_prod")
+        return os.getenv("SQL_DATABASE_INT_TEST", "ingest_int_test")
+    return os.getenv("SQL_DATABASE_INT_PROD", "ingest_int_prod")
+
+
+def _stg_database_for_env(env_name: str) -> str:
+    """Return the *staging* DB name for the given environment."""
+    env_name = env_name.lower().strip()
+    if env_name == "dev":
+        return os.getenv("SQL_DATABASE_STG_DEV", "ingest_stg_dev")
+    if env_name == "test":
+        return os.getenv("SQL_DATABASE_STG_TEST", "ingest_stg_test")
+    return os.getenv("SQL_DATABASE_STG_PROD", "ingest_stg_prod")
+
+
+def _aud_database_for_env(env_name: str) -> str:
+    """Return the *audit* DB name (config + log tables) for the given environment."""
+    env_name = env_name.lower().strip()
+    if env_name == "dev":
+        return os.getenv("SQL_DATABASE_AUD_DEV", "ingest_audit_dev")
+    if env_name == "test":
+        return os.getenv("SQL_DATABASE_AUD_TEST", "ingest_audit_test")
+    return os.getenv("SQL_DATABASE_AUD_PROD", "ingest_audit_prod")
+
+
+# Keep a legacy alias so any external code that calls _database_for_env
+# still receives the integrated-DB name (previously "ingest_dev"/"ingest_prod").
+def _database_for_env(env_name: str) -> str:
+    return _int_database_for_env(env_name)
 
 
 def _sql_host_for_env(env_name: str) -> str:
@@ -134,39 +179,79 @@ def _sharepoint_url_for_env(env_name: str) -> str:
     return os.getenv("SHAREPOINT_SITE_URL_PROD", "")
 
 
-def load_settings(env_override: Optional[str] = None) -> AppSettings:
-    load_dotenv(override=False)
-
-    env_name = (env_override or os.getenv("APP_ENV") or "prod").lower().strip()
-
-    sql_settings = SqlSettings(
+def _make_sql_settings(env_name: str, database: str) -> "SqlSettings":
+    """Build a SqlSettings for any database on the shared SQL Server."""
+    return SqlSettings(
         host=_sql_host_for_env(env_name),
         port=int(os.getenv("SQL_SERVER_PORT", "1433")),
         username=_sql_username_for_env(env_name),
         password=_sql_password_for_env(env_name),
         auth_mode=_sql_auth_mode_for_env(env_name),
-        database=_database_for_env(env_name),
+        database=database,
         odbc_driver=os.getenv("SQL_ODBC_DRIVER", "ODBC Driver 18 for SQL Server"),
         trust_server_certificate=_as_bool(os.getenv("SQL_TRUST_SERVER_CERTIFICATE"), default=True),
     )
 
+
+def load_settings(env_override: Optional[str] = None) -> AppSettings:
+    load_dotenv(override=False)
+
+    env_name = (env_override or os.getenv("APP_ENV") or "prod").lower().strip()
+
+    # Three separate DB connections — same host/credentials, different database names.
+    aud_settings = _make_sql_settings(env_name, _aud_database_for_env(env_name))
+    stg_settings = _make_sql_settings(env_name, _stg_database_for_env(env_name))
+    int_settings = _make_sql_settings(env_name, _int_database_for_env(env_name))
+
     key_vault_name = _key_vault_name_for_env(env_name)
     key_vault_url = _key_vault_url_for_env(env_name, key_vault_name)
+
+    # New Key Vault secret name conventions:
+    #   kv-sp-ingest-dev  → dm-sharepoint-dev-client-id, dm-sql-dev-server, …
+    #   kv-sp-ingest-prod → dm-sharepoint-prod-client-id, dm-sql-prod-server, …
+    env_lower = env_name.lower()
 
     key_vault_settings = KeyVaultSettings(
         vault_name=key_vault_name,
         vault_url=key_vault_url,
         client_id_secret_name=_secret_name_for_env(
-            "KEYVAULT_CLIENT_ID_SECRET_NAME", env_name, default="dm-sharepoint-client-id"
+            "KEYVAULT_CLIENT_ID_SECRET_NAME", env_name,
+            default=f"dm-sharepoint-{env_lower}-client-id",
         ),
         client_secret_secret_name=_secret_name_for_env(
-            "KEYVAULT_CLIENT_SECRET_SECRET_NAME", env_name, default="dm-sharepoint-client-secret"
+            "KEYVAULT_CLIENT_SECRET_SECRET_NAME", env_name,
+            default=f"dm-sharepoint-{env_lower}-client-secret",
         ),
         tenant_id_secret_name=_secret_name_for_env(
-            "KEYVAULT_TENANT_ID_SECRET_NAME", env_name, default="dm-sharepoint-tenant-id"
+            "KEYVAULT_TENANT_ID_SECRET_NAME", env_name,
+            default=f"dm-sharepoint-{env_lower}-tenant-id",
         ),
-        sql_username_secret_name=_secret_name_for_env("KEYVAULT_SQL_USERNAME_SECRET_NAME", env_name),
-        sql_password_secret_name=_secret_name_for_env("KEYVAULT_SQL_PASSWORD_SECRET_NAME", env_name),
+        site_url_secret_name=_secret_name_for_env(
+            "KEYVAULT_SITE_URL_SECRET_NAME", env_name,
+            default=f"dm-sharepoint-{env_lower}-site-url",
+        ) or None,
+        sql_server_secret_name=_secret_name_for_env(
+            "KEYVAULT_SQL_SERVER_SECRET_NAME", env_name,
+            default=f"dm-sql-{env_lower}-server",
+        ) or None,
+        sql_int_database_secret_name=_secret_name_for_env(
+            "KEYVAULT_SQL_INT_DATABASE_SECRET_NAME", env_name,
+            default=f"dm-sql-{env_lower}-int-database",
+        ) or None,
+        sql_stg_database_secret_name=_secret_name_for_env(
+            "KEYVAULT_SQL_STG_DATABASE_SECRET_NAME", env_name,
+            default=f"dm-sql-{env_lower}-stg-database",
+        ) or None,
+        sql_aud_database_secret_name=_secret_name_for_env(
+            "KEYVAULT_SQL_AUD_DATABASE_SECRET_NAME", env_name,
+            default=f"dm-sql-{env_lower}-aud-database",
+        ) or None,
+        sql_username_secret_name=_secret_name_for_env(
+            "KEYVAULT_SQL_USERNAME_SECRET_NAME", env_name
+        ),
+        sql_password_secret_name=_secret_name_for_env(
+            "KEYVAULT_SQL_PASSWORD_SECRET_NAME", env_name
+        ),
     )
 
     sharepoint_settings = SharePointSettings(
@@ -196,7 +281,9 @@ def load_settings(env_override: Optional[str] = None) -> AppSettings:
         ingest_chunk_size_rows=max(1, int(os.getenv("INGEST_CHUNK_SIZE_ROWS", "5000"))),
         azure_subscription_id=os.getenv("AZURE_SUBSCRIPTION_ID") or os.getenv("AZURE_SUBSCRIPTION"),
         azure_resource_group=os.getenv("AZURE_RESOURCE_GROUP"),
-        sql=sql_settings,
+        sql=aud_settings,          # primary connection → audit DB (config + log)
+        sql_stg=stg_settings,      # staging DB
+        sql_int=int_settings,      # integrated/destination DB
         key_vault=key_vault_settings,
         sharepoint=sharepoint_settings,
         email=email_settings,

@@ -124,15 +124,25 @@ def run(argv: Optional[list[str]] = None) -> int:
         logger.debug("Resolved SharePoint credentials from Key Vault or environment fallback")
 
         resolved_sql_settings = _resolve_sql_settings(settings, provider=provider)
+        # Audit DB (config + log) — primary client used for ingestion orchestration
         sql_client = SqlClient(resolved_sql_settings, logger=logger)
         sql_client.test_connection()
         logger.info(
-            "SQL connection established to %s:%s/%s (auth_mode=%s)",
+            "SQL connection established (aud) to %s:%s/%s (auth_mode=%s)",
             resolved_sql_settings.host,
             resolved_sql_settings.port,
             resolved_sql_settings.database,
             resolved_sql_settings.auth_mode,
         )
+
+        # Staging DB — data is always TRUNCATE-loaded here first
+        from dataclasses import replace as _dc_replace
+        stg_settings = _dc_replace(resolved_sql_settings, database=settings.sql_stg.database)
+        stg_sql_client = SqlClient(stg_settings, logger=logger)
+
+        # Integrated DB — data is promoted here after stg, per configured load_strategy
+        int_settings = _dc_replace(resolved_sql_settings, database=settings.sql_int.database)
+        int_sql_client = SqlClient(int_settings, logger=logger)
 
         sharepoint_client = SharePointClient(
             site_url=settings.sharepoint.site_url,
@@ -146,6 +156,8 @@ def run(argv: Optional[list[str]] = None) -> int:
             sql_client=sql_client,
             sharepoint_client=sharepoint_client,
             logger=logger,
+            stg_sql_client=stg_sql_client,
+            int_sql_client=int_sql_client,
         )
 
         if args.dry_run:

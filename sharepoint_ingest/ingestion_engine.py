@@ -20,7 +20,6 @@ import fnmatch
 import json
 import logging
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlparse
@@ -100,9 +99,18 @@ class IngestionEngine:
         sql_client: SqlClient,
         sharepoint_client: SharePointClient,
         logger: logging.Logger,
+        stg_sql_client: Optional[SqlClient] = None,
+        int_sql_client: Optional[SqlClient] = None,
     ):
         self.settings = settings
+        # Audit DB client — used for config loading and audit log writes.
         self.sql_client = sql_client
+        # Staging DB client — all file data is written here first (TRUNCATE daily).
+        # Falls back to sql_client when not supplied (e.g. unit-test scenarios).
+        self.stg_sql_client = stg_sql_client
+        # Integrated DB client — data is promoted here after staging.
+        # When None the promotion step is skipped (backward-compat / tests).
+        self.int_sql_client = int_sql_client
         self.sharepoint_client = sharepoint_client
         self.logger = logger
         self.notifier = EmailNotifier(settings.email)
@@ -110,6 +118,83 @@ class IngestionEngine:
         self._last_file_validation_error_count: int = 0
         self._current_file_memory_peak_mb: Optional[float] = None
         self._progress_markers: dict[str, set[int]] = {}
+
+    # ── staging / integrated DB helpers ──────────────────────────────────────
+
+    @property
+    def _stg_client(self) -> SqlClient:
+        """Return the staging-DB SqlClient, or fall back to the aud client."""
+        return self.stg_sql_client if self.stg_sql_client is not None else self.sql_client
+
+    @property
+    def _int_client(self) -> Optional[SqlClient]:
+        """Return the integrated-DB SqlClient (None if not configured)."""
+        return self.int_sql_client
+
+    @property
+    def _int_database(self) -> Optional[str]:
+        """Return the integrated DB name, or None."""
+        if self.int_sql_client is not None:
+            return self.int_sql_client._settings.database
+        return None
+
+    def _audit_destination_database(self, config: "IngestionConfig") -> Optional[str]:
+        """Return the database name that will ultimately hold the data.
+
+        Prefers the integrated DB when configured (that is where the final promoted
+        data lives); falls back to the staging DB name.  Returns ``None`` when the
+        client does not expose ``_settings`` (e.g. test doubles).
+        """
+        if self._int_database:
+            return self._int_database
+        try:
+            return self._stg_client._settings.database
+        except AttributeError:
+            return None
+
+    def _audit_destination_table(self, config: "IngestionConfig") -> Optional[str]:
+        """Return the fully-qualified table name that will ultimately hold the data.
+
+        Prefers ``integrated_table_name`` when set; falls back to ``staging_table_name``.
+        """
+        int_table = (config.integrated_table_name or "").strip()
+        return int_table if int_table else config.staging_table_name
+
+    def _promote_stg_to_int(self, config: "IngestionConfig") -> None:
+        """Copy all rows from staging → integrated table after a successful stg load.
+
+        Skipped silently when:
+        * ``int_sql_client`` is not configured (backward-compat / test mode), or
+        * ``config.integrated_table_name`` is not set.
+        """
+        if self._int_client is None or self._int_database is None:
+            return
+        int_table = (config.integrated_table_name or "").strip()
+        if not int_table:
+            return
+
+        load_strategy = (config.load_strategy or "TRUNCATE").upper()
+        self.logger.info(
+            "Config id=%s  promoting stg→int  stg=%s  int=%s/%s  strategy=%s",
+            config.id,
+            config.staging_table_name,
+            self._int_database,
+            int_table,
+            load_strategy,
+        )
+        rows_copied = self._stg_client.copy_stg_to_int(
+            stg_table_name=config.staging_table_name,
+            int_table_name=int_table,
+            int_database=self._int_database,
+            load_strategy=load_strategy,
+        )
+        self.logger.info(
+            "Config id=%s  stg→int complete: %s rows promoted to %s/%s",
+            config.id,
+            rows_copied,
+            self._int_database,
+            int_table,
+        )
 
     # ── per-file telemetry ────────────────────────────────────────────────────
 
@@ -357,15 +442,16 @@ class IngestionEngine:
                     process_id=config.process_id,
                     file_name=item.name,
                     status="STARTED",
-                    records_loaded=None,
+                    records_loaded=0,
                     message=None,
                     rows_scanned=0,
                     validation_error_count=0,
                     memory_peak_mb=self._capture_memory_peak_mb(),
                     duration_seconds=None,
                     ingestion_scope=config.ingestion_scope,
-                    ingestion_domain=config.ingestion_domain,
                     is_test_data=config.test_data_enabled,
+                    destination_database=self._audit_destination_database(config),
+                    destination_table=self._audit_destination_table(config),
                 )
             except Exception:
                 self.logger.warning(
@@ -398,8 +484,9 @@ class IngestionEngine:
                         memory_peak_mb=self._capture_memory_peak_mb(),
                         duration_seconds=round(time.perf_counter() - started, 2),
                         ingestion_scope=config.ingestion_scope,
-                        ingestion_domain=config.ingestion_domain,
                         is_test_data=config.test_data_enabled,
+                        destination_database=self._audit_destination_database(config),
+                        destination_table=self._audit_destination_table(config),
                     )
                     if not updated:
                         self.sql_client.insert_audit_record(
@@ -415,8 +502,9 @@ class IngestionEngine:
                             memory_peak_mb=self._capture_memory_peak_mb(),
                             duration_seconds=round(time.perf_counter() - started, 2),
                             ingestion_scope=config.ingestion_scope,
-                            ingestion_domain=config.ingestion_domain,
                             is_test_data=config.test_data_enabled,
+                            destination_database=self._audit_destination_database(config),
+                            destination_table=self._audit_destination_table(config),
                         )
                 else:
                     self.sql_client.insert_audit_record(
@@ -432,8 +520,9 @@ class IngestionEngine:
                         memory_peak_mb=self._capture_memory_peak_mb(),
                         duration_seconds=round(time.perf_counter() - started, 2),
                         ingestion_scope=config.ingestion_scope,
-                        ingestion_domain=config.ingestion_domain,
                         is_test_data=config.test_data_enabled,
+                        destination_database=self._audit_destination_database(config),
+                        destination_table=self._audit_destination_table(config),
                     )
             except Exception as exc:  # pragma: no cover - integration path
                 err = f"Config {config.id} failed for file {item.name}: {exc}"
@@ -445,15 +534,16 @@ class IngestionEngine:
                     updated = self.sql_client.update_audit_record(
                         audit_id=audit_id,
                         status="FAILED",
-                        records_loaded=None,
+                        records_loaded=0,
                         message=err,
                         rows_scanned=self._last_file_rows_scanned or 0,
                         validation_error_count=self._last_file_validation_error_count,
                         memory_peak_mb=self._capture_memory_peak_mb(),
                         duration_seconds=round(time.perf_counter() - started, 2),
                         ingestion_scope=config.ingestion_scope,
-                        ingestion_domain=config.ingestion_domain,
                         is_test_data=config.test_data_enabled,
+                        destination_database=self._audit_destination_database(config),
+                        destination_table=self._audit_destination_table(config),
                     )
                     if not updated:
                         self.sql_client.insert_audit_record(
@@ -462,15 +552,16 @@ class IngestionEngine:
                             process_id=config.process_id,
                             file_name=item.name,
                             status="FAILED",
-                            records_loaded=None,
+                            records_loaded=0,
                             message=err,
                             rows_scanned=self._last_file_rows_scanned or 0,
                             validation_error_count=self._last_file_validation_error_count,
                             memory_peak_mb=self._capture_memory_peak_mb(),
                             duration_seconds=round(time.perf_counter() - started, 2),
                             ingestion_scope=config.ingestion_scope,
-                            ingestion_domain=config.ingestion_domain,
                             is_test_data=config.test_data_enabled,
+                            destination_database=self._audit_destination_database(config),
+                            destination_table=self._audit_destination_table(config),
                         )
                 else:
                     self.sql_client.insert_audit_record(
@@ -479,15 +570,16 @@ class IngestionEngine:
                         process_id=config.process_id,
                         file_name=item.name,
                         status="FAILED",
-                        records_loaded=None,
+                        records_loaded=0,
                         message=err,
                         rows_scanned=self._last_file_rows_scanned or 0,
                         validation_error_count=self._last_file_validation_error_count,
                         memory_peak_mb=self._capture_memory_peak_mb(),
                         duration_seconds=round(time.perf_counter() - started, 2),
                         ingestion_scope=config.ingestion_scope,
-                        ingestion_domain=config.ingestion_domain,
                         is_test_data=config.test_data_enabled,
+                        destination_database=self._audit_destination_database(config),
+                        destination_table=self._audit_destination_table(config),
                     )
                 if failed_folder:
                     try:
@@ -515,6 +607,18 @@ class IngestionEngine:
                         duration_seconds=round(time.perf_counter() - started, 2),
                     )
 
+        # ── staging → integrated promotion ────────────────────────────────────
+        # After all files for this config have been loaded into the stg DB, promote
+        # them to the int DB using the configured load_strategy.  Skip when no files
+        # were processed or any file failed (to avoid promoting stale/partial data).
+        if result.files_processed > 0 and result.files_failed == 0:
+            try:
+                self._promote_stg_to_int(config)
+            except Exception as exc:  # pragma: no cover - integration path
+                err = f"Config {config.id} stg→int promotion failed: {exc}"
+                self.logger.exception(err)
+                result.errors.append(err)
+
         return result
 
     # ── single file dispatch ──────────────────────────────────────────────────
@@ -530,7 +634,7 @@ class IngestionEngine:
     ) -> int:
         lower_name = file_name.lower()
         source_kind = self._resolve_source_kind(file_name)
-        destination_columns = self.sql_client.get_table_columns(config.staging_table_name)
+        destination_columns = self._stg_client.get_table_columns(config.staging_table_name)
         resolved_load_strategy = self._resolve_load_strategy(
             config.load_strategy, force_append=force_append
         )
@@ -624,7 +728,7 @@ class IngestionEngine:
     ) -> int:
         buffer = self.sharepoint_client.download_file_to_buffer(server_relative_url)
         self._capture_memory_peak_mb()
-        destination_columns = self.sql_client.get_table_columns(config.staging_table_name)
+        destination_columns = self._stg_client.get_table_columns(config.staging_table_name)
         chunk_iter = iter_csv_chunks_from_buffer(
             buffer,
             header_skip_rows=config.header_skip_rows,
@@ -645,6 +749,19 @@ class IngestionEngine:
         except Exception:
             total_buffer_bytes = 1
 
+        # ── Streaming duplicate-key tracker for APPEND mode ──────────────────
+        # Resolve merge keys once so we can detect cross-chunk duplicates.
+        seen_key_tuples: set[tuple] = set()
+        append_key_columns: list[str] = []
+        if resolved_load_strategy == "APPEND":
+            try:
+                append_key_columns = self._resolve_merge_keys(config)
+            except Exception:
+                append_key_columns = []
+
+        aggregated_issues: list[ValidationIssue] = []
+
+        # ── 3. Single pass: transform → validate → staging load ───────────────
         for dataframe in chunk_iter:
             processed_any_chunk = True
             self._capture_memory_peak_mb()
@@ -661,6 +778,9 @@ class IngestionEngine:
             )
             self._capture_memory_peak_mb()
 
+            total_rows_scanned += len(dataframe)
+            self._set_rows_scanned(total_rows_scanned)
+
             try:
                 processed_bytes = buffer.tell()
             except Exception:
@@ -674,22 +794,64 @@ class IngestionEngine:
                 unit="bytes",
             )
 
-            if config.schema_check_enabled and first_chunk:
-                self._run_schema_checks(
-                    config, dataframe, destination_columns=destination_columns
+            # ── Per-chunk schema validation (every chunk, not just first) ─────
+            if config.schema_check_enabled:
+                chunk_issues = validate_source_against_destination(
+                    source_df=dataframe,
+                    destination_columns=destination_columns,
+                    null_alert_threshold=self.settings.null_alert_threshold,
                 )
-            if first_chunk:
-                self._check_for_intra_file_duplicate_keys(
-                    dataframe, config, resolved_load_strategy
-                )
+                if chunk_issues:
+                    aggregated_issues.extend(chunk_issues)
+
+            if aggregated_issues:
+                blocking_errors = [
+                    i for i in aggregated_issues if i.severity.upper() == "ERROR"
+                ]
+                if blocking_errors:
+                    self._publish_validation_issues(config, aggregated_issues)
+                    self._set_validation_error_count(len(blocking_errors))
+                    formatted = "; ".join(self._format_issue(i) for i in blocking_errors)
+                    raise ValueError(f"Schema validation failed: {formatted}")
+
+            # ── Streaming cross-chunk duplicate-key check ─────────────────────
+            if resolved_load_strategy == "APPEND" and append_key_columns:
+                available_keys = [k for k in append_key_columns if k in dataframe.columns]
+                if available_keys:
+                    chunk_tuples = [
+                        tuple(row)
+                        for row in dataframe[available_keys].itertuples(index=False, name=None)
+                    ]
+                    # Within-chunk duplicates
+                    within_dup_mask = dataframe.duplicated(subset=available_keys, keep=False)
+                    # Cross-chunk duplicates (keys already seen in a prior chunk)
+                    cross_chunk_mask = pd.Series(
+                        [t in seen_key_tuples for t in chunk_tuples],
+                        index=dataframe.index,
+                    )
+                    dup_mask = within_dup_mask | cross_chunk_mask
+                    if dup_mask.any():
+                        dup_count = int(dup_mask.sum())
+                        sample_records = (
+                            dataframe.loc[dup_mask, available_keys]
+                            .drop_duplicates()
+                            .head(5)
+                            .to_dict(orient="records")
+                        )
+                        raise ValueError(
+                            f"PRIMARY_KEY_VIOLATION: File contains {dup_count} rows with "
+                            f"duplicate values on key column(s) {available_keys} for table "
+                            f"'{config.staging_table_name}'. This will cause a primary key "
+                            f"constraint violation when appended. "
+                            f"Sample duplicate key values: {sample_records}"
+                        )
+                    seen_key_tuples.update(chunk_tuples)
 
             self._load_dataframe(
                 config, dataframe, first_chunk=first_chunk,
                 load_strategy=resolved_load_strategy,
             )
             total_rows += len(dataframe)
-            total_rows_scanned += len(dataframe)
-            self._set_rows_scanned(total_rows_scanned)
 
             try:
                 processed_bytes = buffer.tell()
@@ -704,8 +866,16 @@ class IngestionEngine:
             )
             first_chunk = False
 
+        # ── Publish any remaining non-blocking validation results ─────────────
+        if aggregated_issues:
+            self._publish_validation_issues(config, aggregated_issues)
+            non_blocking_count = sum(
+                1 for i in aggregated_issues if i.severity.upper() != "ERROR"
+            )
+            self._set_validation_error_count(non_blocking_count)
+
         if not processed_any_chunk and resolved_load_strategy == "TRUNCATE":
-            self.sql_client.truncate_and_load(pd.DataFrame(), config.staging_table_name)
+            self._stg_client.truncate_and_load(pd.DataFrame(), config.staging_table_name)
             self._set_rows_scanned(0)
 
         resolved_archive_folder = archive_folder or self._resolve_sharepoint_folder(
@@ -742,12 +912,13 @@ class IngestionEngine:
            :class:`SharePointRangeReader` (reads footer only — 2–3 range
            requests).
         3. Single iteration over row groups — each row group is fetched once:
-           transform → validate in-flight → load to temp table.
-        4. After the complete pass: publish validation results, PK dup check
-           (APPEND), then atomic swap temp → destination.
+           transform → validate in-flight → load directly to the configured
+           staging table (first chunk truncates on TRUNCATE strategy; all
+           subsequent chunks append).
+        4. After the complete pass: publish validation results and archive file.
         """
         # ── 1. File metadata — size guard ─────────────────────────────────────
-        print(f"\n>>> [Stage 1/4]  Metadata check — fetching file info: {file_name}", flush=True)
+        print(f"\n>>> [Stage 1/3]  Metadata check — fetching file info: {file_name}", flush=True)
         file_item = self.sharepoint_client.get_file_item(server_relative_url)
         file_size = max(file_item.get("size", 1), 1)
         cdn_download_url = file_item.get("@microsoft.graph.downloadUrl")
@@ -772,7 +943,7 @@ class IngestionEngine:
         )
 
         # ── 2. Open Parquet footer ─────────────────────────────────────────────
-        print(f"\n>>> [Stage 2/4]  Opening Parquet footer (range-request) ...", flush=True)
+        print(f"\n>>> [Stage 2/3]  Opening Parquet footer (range-request) ...", flush=True)
         parquet_file = open_parquet_from_range_reader(reader)
         total_file_rows = max(parquet_file.metadata.num_rows, 1)
         self._capture_memory_peak_mb()
@@ -782,12 +953,10 @@ class IngestionEngine:
             flush=True,
         )
 
-        destination_columns = self.sql_client.get_table_columns(config.staging_table_name)
+        destination_columns = self._stg_client.get_table_columns(config.staging_table_name)
         resolved_load_strategy = self._resolve_load_strategy(
             load_strategy or config.load_strategy
         )
-        dest_schema, dest_table = parse_destination_table(config.staging_table_name)
-        temp_table_name = f"_tmp_{dest_table}_{uuid.uuid4().hex[:8]}"
 
         aggregated_issues: list[ValidationIssue] = []
         total_rows = 0
@@ -799,131 +968,98 @@ class IngestionEngine:
             processed_rows=0, total_rows=total_file_rows, context=str(config.id)
         )
 
-        # ── 3. Single pass: transform → validate → temp-load ──────────────────
+        # ── 3. Single pass: transform → validate → staging load ───────────────
         print(
-            f"\n>>> [Stage 3/4]  Single-pass stream: transform → validate → SQL temp table",
+            f"\n>>> [Stage 3/3]  Single-pass stream: transform → validate → staging table",
             flush=True,
         )
         print(
-            f"  dest: {config.staging_table_name}  "
-            f"temp: {temp_table_name}  strategy: {resolved_load_strategy}",
+            f"  dest: {config.staging_table_name}  strategy: {resolved_load_strategy}",
             flush=True,
         )
-        try:
-            for dataframe in iter_parquet_chunks_from_file(
-                parquet_file, chunk_size=self.settings.ingest_chunk_size_rows
-            ):
-                processed_any_chunk = True
-                self._capture_memory_peak_mb()
+        for dataframe in iter_parquet_chunks_from_file(
+            parquet_file, chunk_size=self.settings.ingest_chunk_size_rows
+        ):
+            processed_any_chunk = True
+            self._capture_memory_peak_mb()
 
-                dataframe = self._apply_column_mapping_if_present(dataframe, config)
-                dataframe = self._apply_ingestion_metadata(
-                    dataframe, config,
+            dataframe = self._apply_column_mapping_if_present(dataframe, config)
+            dataframe = self._apply_ingestion_metadata(
+                dataframe, config,
+                destination_columns=destination_columns,
+                file_name=file_name,
+                source_kind="parquet",
+                audit_id=audit_id,
+            )
+            dataframe = self._normalize_dataframe(
+                dataframe, source_kind="parquet",
+                destination_columns=destination_columns,
+            )
+            self._capture_memory_peak_mb()
+
+            total_rows_scanned += len(dataframe)
+            self._set_rows_scanned(total_rows_scanned)
+            self._log_phase_progress(
+                phase="validation",
+                processed=total_rows_scanned,
+                total=total_file_rows,
+                context=str(config.id),
+                unit="rows",
+            )
+
+            if config.schema_check_enabled:
+                chunk_issues = validate_source_against_destination(
+                    source_df=dataframe,
                     destination_columns=destination_columns,
-                    file_name=file_name,
-                    source_kind="parquet",
-                    audit_id=audit_id,
+                    null_alert_threshold=self.settings.null_alert_threshold,
                 )
-                dataframe = self._normalize_dataframe(
-                    dataframe, source_kind="parquet",
-                    destination_columns=destination_columns,
-                )
-                self._capture_memory_peak_mb()
+                if chunk_issues:
+                    aggregated_issues.extend(chunk_issues)
 
-                total_rows_scanned += len(dataframe)
-                self._set_rows_scanned(total_rows_scanned)
-                self._log_phase_progress(
-                    phase="validation",
-                    processed=total_rows_scanned,
-                    total=total_file_rows,
-                    context=str(config.id),
-                    unit="rows",
-                )
-
-                if config.schema_check_enabled:
-                    chunk_issues = validate_source_against_destination(
-                        source_df=dataframe,
-                        destination_columns=destination_columns,
-                        null_alert_threshold=self.settings.null_alert_threshold,
-                    )
-                    if chunk_issues:
-                        aggregated_issues.extend(chunk_issues)
-
-                self.sql_client.load_chunk_to_temp(
-                    dataframe, temp_table_name, dest_schema, first_chunk
-                )
-                total_rows += len(dataframe)
-                self._log_sql_ingestion_progress(
-                    processed_rows=total_rows, total_rows=total_file_rows,
-                    context=str(config.id),
-                )
-                self._log_phase_progress(
-                    phase="import",
-                    processed=total_rows, total=total_file_rows,
-                    context=str(config.id), unit="rows",
-                )
-                first_chunk = False
-
-            # ── 4a. Publish validation results ─────────────────────────────────
             if aggregated_issues:
-                self._publish_validation_issues(config, aggregated_issues)
                 blocking_errors = [
                     i for i in aggregated_issues if i.severity.upper() == "ERROR"
                 ]
-                self._set_validation_error_count(len(blocking_errors))
                 if blocking_errors:
+                    self._publish_validation_issues(config, aggregated_issues)
+                    self._set_validation_error_count(len(blocking_errors))
                     formatted = "; ".join(self._format_issue(i) for i in blocking_errors)
                     raise ValueError(f"Schema validation failed: {formatted}")
 
-            if not processed_any_chunk:
-                if resolved_load_strategy == "TRUNCATE":
-                    self.sql_client.truncate_and_load(pd.DataFrame(), config.staging_table_name)
-                self._set_rows_scanned(0)
-            else:
-                # ── 4b. SQL-side PK dup check for APPEND ──────────────────────
-                if resolved_load_strategy == "APPEND":
-                    try:
-                        key_columns = self._resolve_merge_keys(config)
-                        dup_count, sample_records = (
-                            self.sql_client.check_temp_table_for_pk_duplicates(
-                                temp_table_name, dest_schema, key_columns
-                            )
-                        )
-                        if dup_count > 0:
-                            raise ValueError(
-                                f"PRIMARY_KEY_VIOLATION: File contains {dup_count} rows with "
-                                f"duplicate values on key column(s) {key_columns} for table "
-                                f"'{config.staging_table_name}'. "
-                                f"Sample duplicate key values: {sample_records}"
-                            )
-                    except ValueError:
-                        raise
-                    except Exception:
-                        pass  # non-fatal: skip check if key resolution fails
+            self._load_dataframe(
+                config, dataframe,
+                first_chunk=first_chunk,
+                load_strategy=resolved_load_strategy,
+            )
+            total_rows += len(dataframe)
+            self._log_sql_ingestion_progress(
+                processed_rows=total_rows, total_rows=total_file_rows,
+                context=str(config.id),
+            )
+            self._log_phase_progress(
+                phase="import",
+                processed=total_rows, total=total_file_rows,
+                context=str(config.id), unit="rows",
+            )
+            first_chunk = False
 
-                # ── 4c. Atomic swap temp → destination ────────────────────────
-                print(
-                    f"\n>>> [Stage 4/4]  Atomic swap: "
-                    f"{temp_table_name} → {config.staging_table_name} ...",
-                    flush=True,
-                )
-                self.sql_client.swap_temp_to_destination(
-                    temp_table_name, dest_schema, dest_table, resolved_load_strategy
-                )
-                print(
-                    f"  ✓  {total_rows:,} rows committed to {config.staging_table_name}",
-                    flush=True,
-                )
+        # ── Publish any remaining (non-blocking) validation results ───────────
+        if aggregated_issues:
+            self._publish_validation_issues(config, aggregated_issues)
+            non_blocking_count = sum(
+                1 for i in aggregated_issues if i.severity.upper() != "ERROR"
+            )
+            self._set_validation_error_count(non_blocking_count)
 
-        except Exception:
-            try:
-                self.sql_client.drop_temp_table(temp_table_name, dest_schema)
-            except Exception:
-                self.logger.warning(
-                    "Config id=%s could not clean up temp table %s during error handling",
-                    config.id, temp_table_name,
-                )
-            raise
+        if not processed_any_chunk:
+            if resolved_load_strategy == "TRUNCATE":
+                self._stg_client.truncate_and_load(pd.DataFrame(), config.staging_table_name)
+            self._set_rows_scanned(0)
+        else:
+            print(
+                f"  ✓  {total_rows:,} rows loaded to {config.staging_table_name}",
+                flush=True,
+            )
 
         resolved_archive_folder = archive_folder or self._resolve_sharepoint_folder(
             config.sharepoint_process_archive_folder
@@ -1034,7 +1170,7 @@ class IngestionEngine:
     ) -> None:
         dest_columns = (
             destination_columns
-            or self.sql_client.get_table_columns(config.staging_table_name)
+            or self._stg_client.get_table_columns(config.staging_table_name)
         )
         issues = validate_source_against_destination(
             source_df=dataframe,
@@ -1094,12 +1230,12 @@ class IngestionEngine:
     ) -> None:
         resolved = self._resolve_load_strategy(load_strategy or config.load_strategy)
         if resolved == "APPEND":
-            self.sql_client.append_load(dataframe, config.staging_table_name)
+            self._stg_client.append_load(dataframe, config.staging_table_name)
             return
         if first_chunk:
-            self.sql_client.truncate_and_load(dataframe, config.staging_table_name)
+            self._stg_client.truncate_and_load(dataframe, config.staging_table_name)
             return
-        self.sql_client.append_load(dataframe, config.staging_table_name)
+        self._stg_client.append_load(dataframe, config.staging_table_name)
 
     def _resolve_load_strategy(
         self, configured_strategy: Optional[str], force_append: bool = False
@@ -1120,11 +1256,11 @@ class IngestionEngine:
         resolved_load_strategy: str,
     ) -> None:
         """Delegate to :func:`~sharepoint_ingest.ingestion._pk_checks.check_for_intra_file_duplicate_keys`."""
-        _check_pk_dups(dataframe, config, resolved_load_strategy, self.sql_client, self.logger)
+        _check_pk_dups(dataframe, config, resolved_load_strategy, self._stg_client, self.logger)
 
     def _resolve_merge_keys(self, config: IngestionConfig) -> list[str]:
         """Delegate to :func:`~sharepoint_ingest.ingestion._pk_checks.resolve_merge_keys`."""
-        return _resolve_merge_keys_fn(config, self.sql_client, self.logger)
+        return _resolve_merge_keys_fn(config, self._stg_client, self.logger)
 
     # ── notification helpers ──────────────────────────────────────────────────
 

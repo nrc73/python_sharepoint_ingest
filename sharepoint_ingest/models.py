@@ -26,19 +26,42 @@ class IngestionConfig:
     header_skip_rows: int
     check_source_dest_columns: Any
     multi_file_ingest: Any
-    error_notification_email_address: Optional[str]
+    to_email_address: Optional[str]
     process_id: Optional[str]
     workflow_id: Optional[str]
     staging_table_name: str
     is_active: Any = "1"
     ingestion_scope: str = "REAL"
-    ingestion_domain: Optional[str] = None
     is_test_data: Any = 0
     file_name_pattern: Optional[str] = None
     load_strategy: Optional[str] = None
     merge_key_columns: Optional[str] = None
     column_mapping_json: Optional[str] = None
-    error_notification_cc_email_address: Optional[str] = None
+    cc_email_address: Optional[str] = None
+    integrated_table_name: Optional[str] = None
+
+    # ---------------------------------------------------------------------------
+    # Backward-compat aliases — keep existing engine/notification code working
+    # without renaming every call site in one pass.
+    # ---------------------------------------------------------------------------
+
+    @property
+    def error_notification_email_address(self) -> Optional[str]:
+        """Alias for to_email_address (legacy engine/notification call sites)."""
+        return self.to_email_address
+
+    @error_notification_email_address.setter
+    def error_notification_email_address(self, value: Optional[str]) -> None:
+        self.to_email_address = value
+
+    @property
+    def error_notification_cc_email_address(self) -> Optional[str]:
+        """Alias for cc_email_address (legacy engine/notification call sites)."""
+        return self.cc_email_address
+
+    @error_notification_cc_email_address.setter
+    def error_notification_cc_email_address(self, value: Optional[str]) -> None:
+        self.cc_email_address = value
 
     @property
     def schema_check_enabled(self) -> bool:

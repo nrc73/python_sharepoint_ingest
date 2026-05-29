@@ -77,18 +77,41 @@ python sharepoint_setup/keyvault_setup.py \
   --vault-url https://kv-sp-ingest-prod.vault.azure.net/ \
   --client-id <APP_CLIENT_ID> \
   --client-secret <APP_CLIENT_SECRET> \
-  --tenant-id <TENANT_ID>
+  --tenant-id <TENANT_ID> \
+  --site-url https://mycompany715.sharepoint.com/sites/data_ingestion_prod \
+  --sql-server your-prod-sql-server.database.windows.net \
+  --sql-int-database ingest_int_prod \
+  --sql-stg-database ingest_stg_prod \
+  --sql-aud-database ingest_audit_prod
 ```
 
-Default secrets written:
+Default secrets written (all eight required secrets):
 
-- `dm-sharepoint-client-id-prod`
-- `dm-sharepoint-client-secret-prod`
-- `dm-sharepoint-tenant-id-prod`
+**`kv-sp-ingest-prod`**
 
-For dev, run with `--env dev` (writes `...-dev` names).
+- `dm-sharepoint-prod-client-id`
+- `dm-sharepoint-prod-client-secret`
+- `dm-sharepoint-prod-tenant-id`
+- `dm-sharepoint-prod-site-url`
+- `dm-sql-prod-server`
+- `dm-sql-prod-int-database`
+- `dm-sql-prod-stg-database`
+- `dm-sql-prod-aud-database`
 
-Optional SQL secrets can also be seeded for prod service-account auth:
+For dev, run with `--env dev` targeting `https://kv-sp-ingest-dev.vault.azure.net/` (writes `dm-sharepoint-dev-*` and `dm-sql-dev-*` names).
+
+**`kv-sp-ingest-dev`**
+
+- `dm-sharepoint-dev-client-id`
+- `dm-sharepoint-dev-client-secret`
+- `dm-sharepoint-dev-tenant-id`
+- `dm-sharepoint-dev-site-url`
+- `dm-sql-dev-server`
+- `dm-sql-dev-int-database`
+- `dm-sql-dev-stg-database`
+- `dm-sql-dev-aud-database`
+
+Optional legacy SQL credential secrets can also be seeded for prod service-account auth (credential-based auth modes only):
 
 ```bash
 python sharepoint_setup/keyvault_setup.py \
@@ -101,11 +124,16 @@ python sharepoint_setup/keyvault_setup.py \
   --sql-password <PASSWORD>
 ```
 
-Then align `.env` secret-name variables for each environment:
+> The default secret names above are auto-derived from the env name (`dev`|`prod`), matching the Key Vault naming convention exactly. Override them with `--*-secret-name` flags only when using a non-standard vault naming scheme.
+
+Then align `.env` secret-name variables for each environment (usually not needed — auto-derived defaults are used):
 
 - `KEYVAULT_CLIENT_ID_SECRET_NAME_DEV`, `KEYVAULT_CLIENT_SECRET_SECRET_NAME_DEV`, `KEYVAULT_TENANT_ID_SECRET_NAME_DEV`
+- `KEYVAULT_SITE_URL_SECRET_NAME_DEV`, `KEYVAULT_SQL_SERVER_SECRET_NAME_DEV`
+- `KEYVAULT_SQL_INT_DATABASE_SECRET_NAME_DEV`, `KEYVAULT_SQL_STG_DATABASE_SECRET_NAME_DEV`, `KEYVAULT_SQL_AUD_DATABASE_SECRET_NAME_DEV`
 - `KEYVAULT_CLIENT_ID_SECRET_NAME_PROD`, `KEYVAULT_CLIENT_SECRET_SECRET_NAME_PROD`, `KEYVAULT_TENANT_ID_SECRET_NAME_PROD`
-- `KEYVAULT_SQL_USERNAME_SECRET_NAME_PROD`, `KEYVAULT_SQL_PASSWORD_SECRET_NAME_PROD`
+- `KEYVAULT_SITE_URL_SECRET_NAME_PROD`, `KEYVAULT_SQL_SERVER_SECRET_NAME_PROD`
+- `KEYVAULT_SQL_INT_DATABASE_SECRET_NAME_PROD`, `KEYVAULT_SQL_STG_DATABASE_SECRET_NAME_PROD`, `KEYVAULT_SQL_AUD_DATABASE_SECRET_NAME_PROD`
 
 ## 3b) Provision Entra app registrations + Key Vault secrets + SharePoint `Sites.Selected`
 
@@ -132,7 +160,9 @@ What this script does:
   - `dm-sharepoint-<env>-tenant-id`
   - `dm-sharepoint-<env>-site-url`
   - `dm-sql-<env>-server`
-  - `dm-sql-<env>-database`
+  - `dm-sql-<env>-int-database`
+  - `dm-sql-<env>-stg-database`
+  - `dm-sql-<env>-aud-database`
 - prints the SharePoint/PnP commands to grant site-specific `Write` access
 
 > Runtime and setup in this repo are SharePoint-API based; Microsoft Graph permissions are not required.

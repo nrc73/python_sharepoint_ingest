@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pandas as pd
 import pytest
 
@@ -9,6 +11,7 @@ from tools.discover_new_ingestion import (
     _build_discovery_groups,
     _configured_folder_keys,
     _generate_config_insert,
+    _list_folders_to_depth,
     _safe_suffix_from_file_name,
     _snake_case_identifier_fragment,
     _same_filename_family,
@@ -108,15 +111,18 @@ def test_generate_config_insert_includes_notification_to_and_cc_columns() -> Non
         sharepoint_process_folder="/Documents/source",
         sharepoint_process_archive_folder="/Documents/source/Processed",
         sharepoint_process_failed_folder="/Documents/source/Failed",
-        staging_table_name="sharepoint.dest_source",
-        error_notification_email_address="ops@example.com",
-        error_notification_cc_email_address="team@example.com;lead@example.com",
+        staging_table_name="staging.dest_source",
+        to_email_address="ops@example.com",
+        cc_email_address="team@example.com;lead@example.com",
     )
 
-    assert "[error_notification_email_address]" in sql
-    assert "[error_notification_cc_email_address]" in sql
+    assert "[to_email_address]" in sql
+    assert "[cc_email_address]" in sql
+    assert "[column_mapping_json]" in sql
+    assert "[integrated_table_name]" in sql
     assert "N'ops@example.com'" in sql
     assert "N'team@example.com;lead@example.com'" in sql
+    assert "N'{}'" in sql
 
 
 def test_generate_config_insert_renders_null_cc_when_blank() -> None:
@@ -125,13 +131,27 @@ def test_generate_config_insert_renders_null_cc_when_blank() -> None:
         sharepoint_process_folder="/Documents/source",
         sharepoint_process_archive_folder="/Documents/source/Processed",
         sharepoint_process_failed_folder="/Documents/source/Failed",
-        staging_table_name="sharepoint.dest_source",
-        error_notification_email_address="ops@example.com",
-        error_notification_cc_email_address="",
+        staging_table_name="staging.dest_source",
+        to_email_address="ops@example.com",
+        cc_email_address="",
     )
 
-    assert "[error_notification_cc_email_address]" in sql
+    assert "[cc_email_address]" in sql
     assert ",\n    NULL,\n" in sql
+
+
+def test_generate_config_insert_defaults_blank_mapping_to_empty_json_object() -> None:
+    sql = _generate_config_insert(
+        sharepoint_base_url="https://example.sharepoint.com/sites/dev",
+        sharepoint_process_folder="/Documents/source",
+        sharepoint_process_archive_folder="/Documents/source/Processed",
+        sharepoint_process_failed_folder="/Documents/source/Failed",
+        staging_table_name="staging.dest_source",
+        column_mapping_json="",
+    )
+
+    assert "[column_mapping_json]" in sql
+    assert "N'{}'" in sql
 
 
 def test_snake_case_identifier_fragment_converts_camel_and_symbols() -> None:
@@ -142,5 +162,58 @@ def test_snake_case_identifier_fragment_converts_camel_and_symbols() -> None:
 def test_safe_suffix_from_file_name_returns_snake_case() -> None:
     assert _safe_suffix_from_file_name("CustomerTale.xlsx") == "customer_tale"
     assert _safe_suffix_from_file_name("Customer Tale - AU.xlsx") == "customer_tale_au"
+
+
+class _FolderGraphStub:
+    def __init__(self, graph: dict[str, list[str]]):
+        self._graph = graph
+
+    def list_folders(self, folder_server_relative_url: str):
+        children = self._graph.get(folder_server_relative_url, [])
+        return [
+            SimpleNamespace(name=child.rsplit("/", 1)[-1], server_relative_url=child)
+            for child in children
+        ]
+
+
+def test_list_folders_to_depth_1_only_direct_children() -> None:
+    sp = _FolderGraphStub(
+        {
+            "/root": ["/root/a", "/root/b"],
+            "/root/a": ["/root/a/a1"],
+            "/root/b": ["/root/b/b1"],
+        }
+    )
+
+    folders = _list_folders_to_depth(sp, "/root", max_depth=1)
+
+    assert [f.server_relative_url for f in folders] == ["/root/a", "/root/b"]
+
+
+def test_list_folders_to_depth_3_includes_great_grandchildren() -> None:
+    sp = _FolderGraphStub(
+        {
+            "/root": ["/root/a"],
+            "/root/a": ["/root/a/a1"],
+            "/root/a/a1": ["/root/a/a1/a1x"],
+            "/root/a/a1/a1x": ["/root/a/a1/a1x/too_deep"],
+        }
+    )
+
+    folders = _list_folders_to_depth(sp, "/root", max_depth=3)
+
+    assert [f.server_relative_url for f in folders] == [
+        "/root/a",
+        "/root/a/a1",
+        "/root/a/a1/a1x",
+    ]
+
+
+def test_list_folders_to_depth_non_positive_returns_empty() -> None:
+    sp = _FolderGraphStub({"/root": ["/root/a"]})
+
+    assert _list_folders_to_depth(sp, "/root", max_depth=0) == []
+
+
 
 

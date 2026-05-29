@@ -105,6 +105,82 @@ The framework manages these destination fields automatically when present:
 
 ---
 
+## Database architecture
+
+The platform now uses **six databases** (three per environment):
+
+| Database | Environment | Purpose |
+|---|---|---|
+| `ingest_audit_dev` / `ingest_audit_prod` | dev / prod | `config.sharepoint_ingestion` + `log.sharepoint_ingestion_audit` |
+| `ingest_stg_dev` / `ingest_stg_prod` | dev / prod | Daily truncate-and-load **staging** tables (`staging.*`) |
+| `ingest_int_dev` / `ingest_int_prod` | dev / prod | Promoted **integrated** tables (`staging.*`, same structure as stg) |
+
+> **Migration from old single-database setup:** `ingest_dev` → `ingest_int_dev` and `ingest_prod` → `ingest_int_prod`.  Config and log objects move to the `*_audit_*` databases.  See `sql/bootstrap.sql` Section D for migration steps.
+
+### Ingestion flow (per file)
+
+```
+SharePoint file
+  └─► [STG DB]  staging.<table>      TRUNCATE + load all rows for today
+  └─► [log]     audit row inserted   (status = STARTED → LOADED/FAILED)
+  └─► [INT DB]  staging.<table>      APPEND or TRUNCATE_RELOAD per config
+```
+
+1. The **staging DB** (`ingest_stg_*`) is always **truncated and reloaded** for the current run.
+2. After a successful staging load, data is promoted to the **integrated DB** (`ingest_int_*`) using the `load_strategy` from `[config].[sharepoint_ingestion]`:
+   - `TRUNCATE` — integrated table is truncated, then all staging rows are inserted.
+   - `APPEND` — staging rows are appended to the integrated table (PK violation protection applies).
+
+---
+
+## Key Vault secrets
+
+Each environment key vault holds **eight secrets**:
+
+### `kv-sp-ingest-dev`
+| Secret | Description |
+|---|---|
+| `dm-sharepoint-dev-client-id` | SharePoint app registration client ID |
+| `dm-sharepoint-dev-client-secret` | SharePoint app registration client secret |
+| `dm-sharepoint-dev-tenant-id` | Azure AD tenant ID |
+| `dm-sharepoint-dev-site-url` | SharePoint site URL |
+| `dm-sql-dev-server` | SQL Server hostname |
+| `dm-sql-dev-int-database` | Integrated database name (`ingest_int_dev`) |
+| `dm-sql-dev-stg-database` | Staging database name (`ingest_stg_dev`) |
+| `dm-sql-dev-aud-database` | Audit database name (`ingest_audit_dev`) |
+
+### `kv-sp-ingest-prod`
+| Secret | Description |
+|---|---|
+| `dm-sharepoint-prod-client-id` | SharePoint app registration client ID |
+| `dm-sharepoint-prod-client-secret` | SharePoint app registration client secret |
+| `dm-sharepoint-prod-tenant-id` | Azure AD tenant ID |
+| `dm-sharepoint-prod-site-url` | SharePoint site URL |
+| `dm-sql-prod-server` | SQL Server hostname |
+| `dm-sql-prod-int-database` | Integrated database name (`ingest_int_prod`) |
+| `dm-sql-prod-stg-database` | Staging database name (`ingest_stg_prod`) |
+| `dm-sql-prod-aud-database` | Audit database name (`ingest_audit_prod`) |
+
+---
+
+## `[config].[sharepoint_ingestion]` table reference
+
+Key columns after the v2 schema update:
+
+| Column | Type | Notes |
+|---|---|---|
+| `staging_table_name` | `VARCHAR(200)` | Fully-qualified stg table, e.g. `staging.dest_customers` |
+| `integrated_table_name` | `VARCHAR(200)` | Fully-qualified int table (usually same name, different DB) |
+| `load_strategy` | `VARCHAR(30)` | `TRUNCATE` or `APPEND` — controls int promotion step |
+| `to_email_address` | `VARCHAR(400)` | Primary notification recipient |
+| `cc_email_address` | `VARCHAR(400)` | CC notification recipients |
+
+**Removed columns:** `ingestion_domain`, `error_notification_email_address`, `error_notification_cc_email_address`.
+
+> Use `sql/bootstrap.sql` to apply the schema migration idempotently; it renames email columns and drops retired columns automatically.
+
+---
+
 ## Project structure
 
 ```text

@@ -35,18 +35,23 @@ GO
 IF OBJECT_ID('log.sharepoint_ingestion_audit', 'U') IS NULL
 BEGIN
     CREATE TABLE log.sharepoint_ingestion_audit (
-        audit_id BIGINT IDENTITY(1,1) PRIMARY KEY,
-        config_id INT NOT NULL,
-        workflow_id VARCHAR(100) NULL,
-        process_id UNIQUEIDENTIFIER NULL,
-        file_name VARCHAR(255) NULL,
-        status VARCHAR(20) NOT NULL,
-        records_loaded INT NULL,
-        ingestion_scope VARCHAR(20) NULL,
-        ingestion_domain VARCHAR(50) NULL,
-        is_test_data BIT NULL,
-        message VARCHAR(MAX) NULL,
-        sp_ingest_created_utc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+        audit_id               BIGINT IDENTITY(1,1) PRIMARY KEY,
+        config_id              INT              NOT NULL,
+        workflow_id            VARCHAR(100)     NULL,
+        process_id             UNIQUEIDENTIFIER NULL,
+        file_name              VARCHAR(255)     NULL,
+        destination_database   VARCHAR(128)     NULL,
+        destination_table      VARCHAR(300)     NULL,
+        status                 VARCHAR(20)      NOT NULL,
+        records_loaded         INT              NULL,
+        rows_scanned           INT              NULL,
+        validation_error_count INT              NULL,
+        memory_peak_mb         DECIMAL(18,2)    NULL,
+        duration_seconds       DECIMAL(18,2)    NULL,
+        ingestion_scope        VARCHAR(20)      NULL,
+        is_test_data           BIT              NULL,
+        message                VARCHAR(MAX)     NULL,
+        sp_ingest_created_utc  DATETIME2        NOT NULL DEFAULT SYSUTCDATETIME()
     );
 END
 GO
@@ -103,6 +108,18 @@ GO
 IF COL_LENGTH('log.sharepoint_ingestion_audit', 'is_test_data') IS NULL
 BEGIN
     ALTER TABLE log.sharepoint_ingestion_audit ADD is_test_data BIT NULL;
+END
+GO
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'destination_database') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD destination_database VARCHAR(128) NULL;
+END
+GO
+
+IF COL_LENGTH('log.sharepoint_ingestion_audit', 'destination_table') IS NULL
+BEGIN
+    ALTER TABLE log.sharepoint_ingestion_audit ADD destination_table VARCHAR(300) NULL;
 END
 GO
 
@@ -684,7 +701,7 @@ WHEN MATCHED THEN
         file_name_pattern = 'invalid_*parquet*.parquet',
         load_strategy = 'APPEND',
         merge_key_columns = 'transaction_id',
-        column_mapping_json = NULL,
+        column_mapping_json = '{}',
         sp_ingest_modified_utc = SYSUTCDATETIME()
 WHEN NOT MATCHED THEN
     INSERT (
@@ -731,7 +748,7 @@ WHEN NOT MATCHED THEN
         'invalid_*parquet*.parquet',
         'APPEND',
         'transaction_id',
-        NULL
+        '{}'
     );
 GO
 
@@ -744,6 +761,7 @@ SET
     sp_ingest_modified_utc = SYSUTCDATETIME()
 WHERE workflow_id LIKE 'wf-invalid-%';
 GO
+
 
 
 

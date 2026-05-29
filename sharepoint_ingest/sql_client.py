@@ -213,6 +213,15 @@ class SqlClient:
         if process_id is not None:
             process_id = str(process_id)
 
+        raw_column_mapping_json = row.get("column_mapping_json")
+        normalized_column_mapping_json = (
+            str(raw_column_mapping_json).strip()
+            if raw_column_mapping_json is not None
+            else ""
+        )
+        if not normalized_column_mapping_json:
+            normalized_column_mapping_json = "{}"
+
         return IngestionConfig(
             id=int(row.get("id")),
             sharepoint_base_url=str(row.get("sharepoint_base_url") or ""),
@@ -224,7 +233,9 @@ class SqlClient:
             header_skip_rows=int(row.get("header_skip_rows") or 0),
             check_source_dest_columns=row.get("check_source_dest_columns"),
             multi_file_ingest=row.get("multi_file_ingest"),
-            error_notification_email_address=(
+            # Prefer new column names; fall back to legacy names for any
+            # existing DBs that have not yet been migrated.
+            to_email_address=(
                 row.get("to_email_address")
                 or row.get("error_notification_email_address")
             ),
@@ -233,16 +244,16 @@ class SqlClient:
             staging_table_name=str(row.get("staging_table_name") or ""),
             is_active=row.get("is_active", "1"),
             ingestion_scope=str(row.get("ingestion_scope") or "REAL"),
-            ingestion_domain=row.get("ingestion_domain"),
             is_test_data=row.get("is_test_data", 0),
             file_name_pattern=row.get("file_name_pattern"),
             load_strategy=row.get("load_strategy"),
             merge_key_columns=row.get("merge_key_columns"),
-            column_mapping_json=row.get("column_mapping_json"),
-            error_notification_cc_email_address=(
+            column_mapping_json=normalized_column_mapping_json,
+            cc_email_address=(
                 row.get("cc_email_address")
                 or row.get("error_notification_cc_email_address")
             ),
+            integrated_table_name=row.get("integrated_table_name") or None,
         )
 
     def get_table_columns(self, table_name: str) -> list[dict[str, Any]]:
@@ -294,15 +305,19 @@ class SqlClient:
         memory_peak_mb: Optional[float] = None,
         duration_seconds: Optional[float] = None,
         ingestion_scope: Optional[str] = None,
-        ingestion_domain: Optional[str] = None,
         is_test_data: Optional[bool] = None,
+        destination_database: Optional[str] = None,
+        destination_table: Optional[str] = None,
     ) -> Optional[int]:
         sql_text = """
-        DECLARE @new_audit_id BIGINT = NULL;
+        SET NOCOUNT ON;
+        DECLARE @new_audit TABLE (audit_id BIGINT);
 
         IF OBJECT_ID('log.sharepoint_ingestion_audit', 'U') IS NOT NULL
         BEGIN
-            IF COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_scope') IS NOT NULL
+            IF COL_LENGTH('log.sharepoint_ingestion_audit', 'destination_database') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'destination_table') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_scope') IS NOT NULL
                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'is_test_data') IS NOT NULL
                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'rows_scanned') IS NOT NULL
                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'validation_error_count') IS NOT NULL
@@ -321,10 +336,12 @@ class SqlClient:
                     memory_peak_mb,
                     duration_seconds,
                     ingestion_scope,
-                    ingestion_domain,
                     is_test_data,
+                    destination_database,
+                    destination_table,
                     message
                 )
+                OUTPUT CAST(inserted.audit_id AS BIGINT) INTO @new_audit(audit_id)
                 VALUES (
                     :config_id,
                     :workflow_id,
@@ -337,11 +354,50 @@ class SqlClient:
                     :memory_peak_mb,
                     :duration_seconds,
                     :ingestion_scope,
-                    :ingestion_domain,
+                    :is_test_data,
+                    :destination_database,
+                    :destination_table,
+                    :message
+                );
+            END
+            ELSE IF COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_scope') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'is_test_data') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'rows_scanned') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'validation_error_count') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'memory_peak_mb') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'duration_seconds') IS NOT NULL
+            BEGIN
+                INSERT INTO log.sharepoint_ingestion_audit (
+                    config_id,
+                    workflow_id,
+                    process_id,
+                    file_name,
+                    status,
+                    records_loaded,
+                    rows_scanned,
+                    validation_error_count,
+                    memory_peak_mb,
+                    duration_seconds,
+                    ingestion_scope,
+                    is_test_data,
+                    message
+                )
+                OUTPUT CAST(inserted.audit_id AS BIGINT) INTO @new_audit(audit_id)
+                VALUES (
+                    :config_id,
+                    :workflow_id,
+                    TRY_CONVERT(uniqueidentifier, :process_id),
+                    :file_name,
+                    :status,
+                    :records_loaded,
+                    COALESCE(:rows_scanned, 0),
+                    :validation_error_count,
+                    :memory_peak_mb,
+                    :duration_seconds,
+                    :ingestion_scope,
                     :is_test_data,
                     :message
                 );
-                SET @new_audit_id = CAST(SCOPE_IDENTITY() AS BIGINT);
             END
             ELSE IF COL_LENGTH('log.sharepoint_ingestion_audit', 'rows_scanned') IS NOT NULL
                 AND COL_LENGTH('log.sharepoint_ingestion_audit', 'validation_error_count') IS NOT NULL
@@ -361,6 +417,7 @@ class SqlClient:
                     duration_seconds,
                     message
                 )
+                OUTPUT CAST(inserted.audit_id AS BIGINT) INTO @new_audit(audit_id)
                 VALUES (
                     :config_id,
                     :workflow_id,
@@ -374,7 +431,6 @@ class SqlClient:
                     :duration_seconds,
                     :message
                 );
-                SET @new_audit_id = CAST(SCOPE_IDENTITY() AS BIGINT);
             END
             ELSE
             BEGIN
@@ -387,6 +443,7 @@ class SqlClient:
                     records_loaded,
                     message
                 )
+                OUTPUT CAST(inserted.audit_id AS BIGINT) INTO @new_audit(audit_id)
                 VALUES (
                     :config_id,
                     :workflow_id,
@@ -396,11 +453,10 @@ class SqlClient:
                     :records_loaded,
                     :message
                 );
-                SET @new_audit_id = CAST(SCOPE_IDENTITY() AS BIGINT);
             END
         END
 
-        SELECT @new_audit_id AS audit_id;
+        SELECT TOP 1 audit_id FROM @new_audit;
         """
         params = {
             "config_id": config_id,
@@ -415,8 +471,9 @@ class SqlClient:
             "memory_peak_mb": memory_peak_mb,
             "duration_seconds": duration_seconds,
             "ingestion_scope": ingestion_scope,
-            "ingestion_domain": ingestion_domain,
             "is_test_data": 1 if is_test_data else 0 if is_test_data is not None else None,
+            "destination_database": destination_database,
+            "destination_table": destination_table,
         }
 
         with self._engine.begin() as conn:
@@ -440,13 +497,16 @@ class SqlClient:
         memory_peak_mb: Optional[float] = None,
         duration_seconds: Optional[float] = None,
         ingestion_scope: Optional[str] = None,
-        ingestion_domain: Optional[str] = None,
         is_test_data: Optional[bool] = None,
+        destination_database: Optional[str] = None,
+        destination_table: Optional[str] = None,
     ) -> bool:
         sql_text = """
         IF OBJECT_ID('log.sharepoint_ingestion_audit', 'U') IS NOT NULL
         BEGIN
-            IF COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_scope') IS NOT NULL
+            IF COL_LENGTH('log.sharepoint_ingestion_audit', 'destination_database') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'destination_table') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_scope') IS NOT NULL
                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'is_test_data') IS NOT NULL
                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'rows_scanned') IS NOT NULL
                AND COL_LENGTH('log.sharepoint_ingestion_audit', 'validation_error_count') IS NOT NULL
@@ -462,7 +522,28 @@ class SqlClient:
                     memory_peak_mb = :memory_peak_mb,
                     duration_seconds = :duration_seconds,
                     ingestion_scope = :ingestion_scope,
-                    ingestion_domain = :ingestion_domain,
+                    is_test_data = :is_test_data,
+                    destination_database = :destination_database,
+                    destination_table = :destination_table,
+                    message = :message
+                WHERE audit_id = :audit_id;
+            END
+            ELSE IF COL_LENGTH('log.sharepoint_ingestion_audit', 'ingestion_scope') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'is_test_data') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'rows_scanned') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'validation_error_count') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'memory_peak_mb') IS NOT NULL
+               AND COL_LENGTH('log.sharepoint_ingestion_audit', 'duration_seconds') IS NOT NULL
+            BEGIN
+                UPDATE log.sharepoint_ingestion_audit
+                SET
+                    status = :status,
+                    records_loaded = :records_loaded,
+                    rows_scanned = COALESCE(:rows_scanned, 0),
+                    validation_error_count = :validation_error_count,
+                    memory_peak_mb = :memory_peak_mb,
+                    duration_seconds = :duration_seconds,
+                    ingestion_scope = :ingestion_scope,
                     is_test_data = :is_test_data,
                     message = :message
                 WHERE audit_id = :audit_id;
@@ -504,8 +585,9 @@ class SqlClient:
             "memory_peak_mb": memory_peak_mb,
             "duration_seconds": duration_seconds,
             "ingestion_scope": ingestion_scope,
-            "ingestion_domain": ingestion_domain,
             "is_test_data": 1 if is_test_data else 0 if is_test_data is not None else None,
+            "destination_database": destination_database,
+            "destination_table": destination_table,
         }
 
         with self._engine.begin() as conn:
@@ -624,140 +706,105 @@ class SqlClient:
                 f"rows before retrying APPEND. Original error: {exc}"
             ) from exc
 
-    def load_chunk_to_temp(
+    def copy_stg_to_int(
         self,
-        df: pd.DataFrame,
-        temp_table: str,
-        schema: str,
-        first_chunk: bool,
-    ) -> None:
-        """Append *df* into a temporary staging table within *schema*.
+        stg_table_name: str,
+        int_table_name: str,
+        int_database: str,
+        load_strategy: str,
+    ) -> int:
+        """Copy all rows from a staging table into an integrated table in a different DB.
 
-        On the first chunk (``first_chunk=True``) the table is created/replaced via
-        ``if_exists="replace"``.  On subsequent chunks rows are appended.
-        Uses ``fast_executemany`` via ``method=None`` — same path as :meth:`append_load`.
+        Uses SQL Server 3-part naming (``[database].[schema].[table]``) so both DBs
+        must reside on the **same SQL Server instance**.
+
+        Parameters
+        ----------
+        stg_table_name:
+            Fully-qualified staging table, e.g. ``staging.dest_customers``
+            (resolved against *this* connection's database).
+        int_table_name:
+            Fully-qualified integrated table, e.g. ``staging.dest_customers``
+            (resolved inside *int_database*).
+        int_database:
+            Name of the integrated database, e.g. ``ingest_int_dev``.
+        load_strategy:
+            ``TRUNCATE`` — truncate the int table before inserting.
+            ``APPEND``   — append without truncation.
+
+        Returns
+        -------
+        int
+            Number of rows copied.
         """
-        if df.empty:
-            return
-        df = self._normalize_datetime_columns(df)
-        dtype_map = self._build_sqlalchemy_dtype_map(f"{schema}.{temp_table}", list(df.columns)) if not first_chunk else {}
-        df.to_sql(
-            name=temp_table,
-            schema=schema,
-            con=self._engine,
-            if_exists="replace" if first_chunk else "append",
-            index=False,
-            chunksize=10_000,
-            method=None,
-            dtype=dtype_map or None,
+        stg_schema, stg_table = _parse_table_name(stg_table_name)
+        int_schema, int_table = _parse_table_name(int_table_name)
+
+        stg_q = f"{_quote_identifier(stg_schema)}.{_quote_identifier(stg_table)}"
+        int_q = (
+            f"{_quote_identifier(int_database)}"
+            f".{_quote_identifier(int_schema)}"
+            f".{_quote_identifier(int_table)}"
         )
 
-    def check_temp_table_for_pk_duplicates(
-        self,
-        temp_table: str,
-        schema: str,
-        key_columns: list[str],
-    ) -> tuple[int, list[dict[str, Any]]]:
-        """Return *(total_duplicate_rows, sample_records)* for the temp staging table.
+        # Resolve common columns between staging and integrated tables so we can build
+        # an explicit INSERT column list (avoids failures when the two tables carry
+        # server-managed audit columns that only one side has).
+        stg_cols = [str(c["column_name"]) for c in self.get_table_columns(stg_table_name)]
 
-        Executes a ``GROUP BY … HAVING COUNT(*) > 1`` entirely in SQL — no
-        row-by-row Python scan — so it scales to hundreds of millions of rows.
-        Returns ``(0, [])`` when no duplicates are found.
+        # Query int table columns via USE-DB trick in a separate EXEC.
+        int_col_sql = f"""
+            SELECT COLUMN_NAME
+            FROM [{int_database}].INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table
+            ORDER BY ORDINAL_POSITION
         """
-        if not key_columns:
-            return 0, []
+        int_col_rows = self.query_rows(int_col_sql, {"schema": int_schema, "table": int_table})
+        int_cols = [str(r["column_name"]) for r in int_col_rows]
 
-        key_cols_q = ", ".join(_quote_identifier(k) for k in key_columns)
-        temp_q = f"{_quote_identifier(schema)}.{_quote_identifier(temp_table)}"
+        if not int_cols:
+            # Fallback: assume same structure as stg
+            int_cols = stg_cols
 
-        count_sql = f"""
-            SELECT ISNULL(SUM(grp_cnt), 0) AS total_dup_rows
-            FROM (
-                SELECT COUNT(*) AS grp_cnt
-                FROM {temp_q}
-                GROUP BY {key_cols_q}
-                HAVING COUNT(*) > 1
-            ) AS _dup_groups
-        """
-        count_rows = self.query_rows(count_sql)
-        total_dup_rows = int(count_rows[0].get("total_dup_rows") or 0) if count_rows else 0
+        stg_by_lower = {c.lower(): c for c in stg_cols}
+        common_cols = [c for c in int_cols if c.lower() in stg_by_lower]
 
-        if total_dup_rows == 0:
-            return 0, []
-
-        sample_sql = f"""
-            SELECT TOP 5 {key_cols_q}
-            FROM {temp_q}
-            GROUP BY {key_cols_q}
-            HAVING COUNT(*) > 1
-        """
-        sample_records = self.query_rows(sample_sql)
-        return total_dup_rows, sample_records
-
-    def swap_temp_to_destination(
-        self,
-        temp_table: str,
-        schema: str,
-        destination_table: str,
-        load_strategy: str,
-    ) -> None:
-        """Atomically copy all rows from *temp_table* into *destination_table*, then drop temp.
-
-        For ``TRUNCATE`` strategy the destination is cleared first inside the same
-        transaction so no partial state is ever visible.  For ``APPEND`` rows are
-        inserted without prior truncation.
-
-        The temp table is **always** dropped (success or error) via a ``finally`` block.
-        """
-        temp_q = f"{_quote_identifier(schema)}.{_quote_identifier(temp_table)}"
-        dest_q = f"{_quote_identifier(schema)}.{_quote_identifier(destination_table)}"
-
-        # Build an explicit shared-column insert list to avoid SELECT * mismatches
-        # when destination has additional managed/audit columns with defaults.
-        dest_columns = [str(c["column_name"]) for c in self.get_table_columns(f"{schema}.{destination_table}")]
-        temp_columns = [str(c["column_name"]) for c in self.get_table_columns(f"{schema}.{temp_table}")]
-
-        temp_by_lower = {c.lower(): c for c in temp_columns}
-        common_columns = [c for c in dest_columns if c.lower() in temp_by_lower]
-
-        if not common_columns:
+        if not common_cols:
             raise ValueError(
-                f"No common columns found between temp table '{schema}.{temp_table}' "
-                f"and destination table '{schema}.{destination_table}'."
+                f"No common columns found between staging table '{stg_table_name}' "
+                f"and integrated table '{int_database}.{int_table_name}'."
             )
 
-        insert_cols_q = ", ".join(_quote_identifier(c) for c in common_columns)
+        cols_q = ", ".join(_quote_identifier(c) for c in common_cols)
 
         try:
             with self._engine.begin() as conn:
                 if load_strategy == "TRUNCATE":
-                    conn.execute(text(f"TRUNCATE TABLE {dest_q}"))
+                    conn.execute(text(f"TRUNCATE TABLE {int_q}"))
                 try:
                     conn.execute(
                         text(
-                            f"INSERT INTO {dest_q} ({insert_cols_q}) "
-                            f"SELECT {insert_cols_q} FROM {temp_q}"
+                            f"INSERT INTO {int_q} ({cols_q}) "
+                            f"SELECT {cols_q} FROM {stg_q}"
                         )
                     )
+                    # Retrieve row count from staging table
+                    count_result = conn.execute(text(f"SELECT COUNT(*) AS n FROM {stg_q}"))
+                    row = count_result.mappings().first()
+                    return int(row["n"]) if row else 0
                 except SqlIntegrityError as exc:
                     raise ValueError(
-                        f"PRIMARY_KEY_VIOLATION: Committing rows from staging temp table to "
-                        f"'{schema}.{destination_table}' failed due to a primary key or "
+                        f"PRIMARY_KEY_VIOLATION: Copying rows from '{stg_table_name}' to "
+                        f"'{int_database}.{int_table_name}' failed due to a primary key or "
                         f"unique constraint violation. Original error: {exc}"
                     ) from exc
-        finally:
-            self.drop_temp_table(temp_table, schema)
-
-    def drop_temp_table(self, temp_table: str, schema: str) -> None:
-        """Drop *temp_table* if it exists — safe to call even if already dropped."""
-        temp_q = f"{_quote_identifier(schema)}.{_quote_identifier(temp_table)}"
-        try:
-            with self._engine.begin() as conn:
-                conn.execute(text(f"DROP TABLE IF EXISTS {temp_q}"))
-        except Exception:
-            self._logger.warning(
-                "Could not drop temp table %s.%s during cleanup", schema, temp_table
-            )
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to copy staging→integrated: "
+                f"stg='{stg_table_name}' int='{int_database}.{int_table_name}': {exc}"
+            ) from exc
 
     def merge_load(self, df: pd.DataFrame, table_name: str, merge_keys: list[str]) -> None:
         if not merge_keys:

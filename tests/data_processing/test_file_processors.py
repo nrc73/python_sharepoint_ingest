@@ -32,6 +32,36 @@ def test_iter_csv_chunks_from_buffer_honors_skiprows() -> None:
     assert list(chunks[0]["col1"]) == [1]
 
 
+def test_read_csv_from_bytes_handles_mixed_quoted_and_unquoted_fields() -> None:
+    payload = (
+        b"id,name,description\n"
+        b"1,alpha,simple\n"
+        b"2,beta,\"long string, with comma and \"\"quoted\"\" text\"\n"
+        b"3,gamma,after\n"
+    )
+
+    df = read_csv_from_bytes(payload)
+
+    assert len(df) == 3
+    assert df.loc[1, "description"] == 'long string, with comma and "quoted" text'
+
+
+def test_iter_csv_chunks_from_buffer_handles_mixed_quoted_and_unquoted_fields() -> None:
+    payload = (
+        b"id,name,description\n"
+        b"1,alpha,simple\n"
+        b"2,beta,\"long string, with comma and \"\"quoted\"\" text\"\n"
+        b"3,gamma,after\n"
+    )
+
+    chunks = list(iter_csv_chunks_from_buffer(BytesIO(payload), chunk_size=2))
+
+    assert len(chunks) == 2
+    assert list(chunks[0]["id"]) == [1, 2]
+    assert chunks[0].loc[1, "description"] == 'long string, with comma and "quoted" text'
+    assert list(chunks[1]["id"]) == [3]
+
+
 def test_read_excel_single_sheet_from_bytes() -> None:
     out = BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
