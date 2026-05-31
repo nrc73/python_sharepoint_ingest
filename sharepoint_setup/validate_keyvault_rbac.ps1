@@ -195,6 +195,55 @@ function Get-AccessTokenClaims {
     }
 }
 
+function Get-CurrentPrincipalObjectIdFallback {
+    # Fallback for environments where access-token claim decoding is unavailable.
+    # Attempts interactive-user resolution first.
+    $signedInUser = Invoke-AzJson -Arguments @("ad", "signed-in-user", "show") -AllowFailure
+    if ($signedInUser.Success -and $null -ne $signedInUser.Data) {
+        $userId = [string]$signedInUser.Data.id
+        $upn = [string]$signedInUser.Data.userPrincipalName
+        if (-not [string]::IsNullOrWhiteSpace($userId)) {
+            return [pscustomobject]@{
+                Success = $true
+                ObjectId = $userId
+                PrincipalType = "user"
+                PrincipalName = $upn
+                Error = $null
+            }
+        }
+    }
+
+    # If not an interactive user, attempt service principal lookup from current account metadata.
+    $accountResult = Invoke-AzJson -Arguments @("account", "show") -AllowFailure
+    if ($accountResult.Success -and $null -ne $accountResult.Data) {
+        $userName = [string]$accountResult.Data.user.name
+        $userType = [string]$accountResult.Data.user.type
+        if (-not [string]::IsNullOrWhiteSpace($userName) -and $userType -ieq "servicePrincipal") {
+            $spResult = Invoke-AzJson -Arguments @("ad", "sp", "show", "--id", $userName) -AllowFailure
+            if ($spResult.Success -and $null -ne $spResult.Data) {
+                $spObjectId = [string]$spResult.Data.id
+                if (-not [string]::IsNullOrWhiteSpace($spObjectId)) {
+                    return [pscustomobject]@{
+                        Success = $true
+                        ObjectId = $spObjectId
+                        PrincipalType = "servicePrincipal"
+                        PrincipalName = $userName
+                        Error = $null
+                    }
+                }
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Success = $false
+        ObjectId = $null
+        PrincipalType = $null
+        PrincipalName = $null
+        Error = "Unable to resolve principal object id via fallback (signed-in user or service principal lookup)."
+    }
+}
+
 function Get-SecretReadResult {
     param(
         [string]$VaultName,
@@ -406,7 +455,23 @@ foreach ($environmentName in $targetEnvironments) {
     $claimsResult = Get-AccessTokenClaims
     $tokenObjectId = $null
     if (-not $claimsResult.Success -or $null -eq $claimsResult.Claims) {
-        Add-Result -Summary $summary -Level "WARN" -Message "Could not decode access token claims: $($claimsResult.Error)"
+        $fallbackPrincipal = Get-CurrentPrincipalObjectIdFallback
+        if ($fallbackPrincipal.Success -and -not [string]::IsNullOrWhiteSpace($fallbackPrincipal.ObjectId)) {
+            $tokenObjectId = $fallbackPrincipal.ObjectId
+            $principalLabel = if ([string]::IsNullOrWhiteSpace($fallbackPrincipal.PrincipalName)) {
+                $fallbackPrincipal.PrincipalType
+            }
+            else {
+                "$($fallbackPrincipal.PrincipalType) '$($fallbackPrincipal.PrincipalName)'"
+            }
+
+            Add-Result -Summary $summary -Level "PASS" -Message "Access token claims could not be decoded; using fallback principal resolution path."
+            Add-Result -Summary $summary -Level "PASS" -Message "Resolved principal object id via fallback for ${principalLabel}: oid=$tokenObjectId"
+        }
+        else {
+            Add-Result -Summary $summary -Level "WARN" -Message "Could not decode access token claims: $($claimsResult.Error)"
+            Add-Result -Summary $summary -Level "WARN" -Message "Fallback principal resolution failed: $($fallbackPrincipal.Error)"
+        }
     }
     else {
         $claims = $claimsResult.Claims
@@ -470,9 +535,9 @@ foreach ($environmentName in $targetEnvironments) {
     if ($TestSecrets.IsPresent) {
         Write-Section "Secret read tests ($environmentName)"
 
-        $clientIdSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_CLIENT_ID_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues -DefaultValue "dm-sharepoint-client-id"
-        $clientSecretSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_CLIENT_SECRET_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues -DefaultValue "dm-sharepoint-client-secret"
-        $tenantSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_TENANT_ID_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues -DefaultValue "dm-sharepoint-tenant-id"
+        $clientIdSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_CLIENT_ID_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues -DefaultValue "dm-sharepoint-$environmentName-client-id"
+        $clientSecretSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_CLIENT_SECRET_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues -DefaultValue "dm-sharepoint-$environmentName-client-secret"
+        $tenantSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_TENANT_ID_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues -DefaultValue "dm-sharepoint-$environmentName-tenant-id"
         $sqlUserSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_SQL_USERNAME_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues
         $sqlPasswordSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_SQL_PASSWORD_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues
 
