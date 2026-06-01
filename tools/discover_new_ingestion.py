@@ -29,7 +29,10 @@ Usage (DEV only)
 from __future__ import annotations
 
 import argparse
+import csv
+import datetime
 import fnmatch
+import io
 import itertools
 import math
 import os
@@ -431,6 +434,147 @@ def _no_pk(n: int) -> dict:
         "confident": False,
         "strategy": "TRUNCATE",
     }
+
+
+# ---------------------------------------------------------------------------
+# CSV mapping rows helper
+# ---------------------------------------------------------------------------
+
+_MAPPING_CSV_HEADER = (
+    "Object name",
+    "Last update",
+    "Source object",
+    "Source column",
+    "Staging column",
+    "Staging type",
+    "Integrated column",
+    "Integrated type",
+    "Primary key?",
+    "Transform",
+    "Comments",
+)
+
+_MAPPING_FIRST_ROW_COMMENT = "Mapping provided manually, it cannot or meant to be generated"
+
+
+def _col_type_with_nullability(raw_type: str, *, is_pk: bool, padding: float) -> str:
+    """Return a finalized SQL type string with nullability appended, e.g. 'VARCHAR(100) NOT NULL'."""
+    final = _finalize_type(raw_type, padding)
+    nullability = "NOT NULL" if is_pk else "NULL"
+    return f"{final} {nullability}"
+
+
+def _system_col_type_with_nullability(col_type: str, col_extra: str) -> str:
+    """Return a clean 'TYPE NULLABILITY' string from a system column definition tuple.
+
+    The col_extra may contain DEFAULT expressions; we strip those and keep only
+    the nullability keyword (NOT NULL / NULL).
+    """
+    extra_upper = col_extra.upper()
+    if "NOT NULL" in extra_upper:
+        nullability = "NOT NULL"
+    elif "NULL" in extra_upper:
+        nullability = "NULL"
+    else:
+        nullability = ""
+    return f"{col_type} {nullability}".strip()
+
+
+def _generate_mapping_csv_rows(
+    *,
+    object_name: str,
+    source_object: str,
+    data_columns: dict[str, str],
+    system_columns: list[tuple],
+    pk_columns: list[str],
+    padding: float = 0.20,
+    as_of_date: datetime.date | None = None,
+) -> str:
+    """Return a CSV string (header + one row per column) suitable for appending to a
+    mapping tracking CSV file.
+
+    Columns emitted:
+        Object name, Last update, Source object, Source column,
+        Staging column, Staging type, Integrated column, Integrated type,
+        Primary key?, Transform, Comments
+
+    The first data row carries a comment noting that the mapping was generated
+    automatically.
+
+    Args:
+        object_name:    Destination table name without schema prefix (e.g. 'team_effort_register').
+        source_object:  Human-readable SharePoint folder name (e.g. 'team effort register').
+        data_columns:   Ordered dict of {col_name: raw_type} from profiling.
+        system_columns: List of (name, type, extra) tuples (e.g. _SYSTEM_COLUMNS_PLAIN).
+        pk_columns:     Inferred PK column names.
+        padding:        VARCHAR length padding fraction (default 0.20).
+        as_of_date:     Date to stamp in 'Last update'; defaults to today.
+    """
+    if as_of_date is None:
+        as_of_date = datetime.date.today()
+    date_str = as_of_date.strftime("%d/%m/%Y")
+
+    pk_set = set(pk_columns)
+    sys_col_names_lower = {c[0].lower() for c in system_columns}
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(_MAPPING_CSV_HEADER)
+
+    first_row = True
+
+    # ── Business columns ─────────────────────────────────────────────────────
+    for col_name, raw_type in data_columns.items():
+        if col_name.lower() in sys_col_names_lower:
+            continue  # system columns emitted separately below
+
+        is_pk = col_name in pk_set
+        col_type_str = _col_type_with_nullability(raw_type, is_pk=is_pk, padding=padding)
+
+        writer.writerow([
+            object_name,
+            date_str,
+            source_object,
+            col_name,
+            col_name,
+            col_type_str,
+            col_name,
+            col_type_str,
+            "Y" if is_pk else "",
+            "",
+            _MAPPING_FIRST_ROW_COMMENT if first_row else "",
+        ])
+        first_row = False
+
+    # ── System columns ────────────────────────────────────────────────────────
+    # System columns are added by the ingestion engine — they are NOT present in
+    # the source file and never appear as keys in column_mapping_json.  Following
+    # the same source→destination pattern as column_mapping_json, their Source
+    # column is left blank (no source key) while Staging/Integrated columns are
+    # populated with the engine-managed column name.
+    for col_name, col_type, col_extra in system_columns:
+        is_pk = col_name in pk_set
+        if is_pk:
+            col_type_str = f"{col_type} NOT NULL"
+        else:
+            col_type_str = _system_col_type_with_nullability(col_type, col_extra)
+
+        writer.writerow([
+            object_name,
+            date_str,
+            source_object,
+            "",          # Source column — empty: not present in source file
+            col_name,    # Staging column
+            col_type_str,
+            col_name,    # Integrated column
+            col_type_str,
+            "Y" if is_pk else "",
+            "",
+            _MAPPING_FIRST_ROW_COMMENT if first_row else "",
+        ])
+        first_row = False
+
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -870,17 +1014,52 @@ def _print_group_sql(
     )
     print()
 
+    # Human-readable source object name: folder name with underscores → spaces
+    source_object = folder_name.replace("_", " ").lower()
+    # Object name: table basename without the leading "dest_" prefix
+    object_name = table_basename.removeprefix("dest_")
+
+    print("-- " + "─" * 58)
+    print("-- CSV mapping rows (append to existing mapping CSV file)")
+    print("-- " + "─" * 58)
+    print(
+        _generate_mapping_csv_rows(
+            object_name=object_name,
+            source_object=source_object,
+            data_columns=group.combined_profile,
+            system_columns=sys_cols,
+            pk_columns=pk_cols,
+            padding=padding,
+        ),
+        end="",
+    )
+    print()
+
 
 # ---------------------------------------------------------------------------
 # Main discovery
 # ---------------------------------------------------------------------------
 
-def _build_sp_client(settings) -> SharePointClient:
+def _build_sp_client(settings) -> tuple["SharePointClient", object]:
+    """Return (SharePointClient, patched_settings) resolving credentials and site URL from KV."""
+    from dataclasses import replace as _dc_replace
+
     env_name = str(getattr(settings, "env_name", "") or "")
     provider = maybe_build_provider(settings.key_vault)
     if provider is not None:
         print("  [auth] Fetching SharePoint credentials from Key Vault …")
         client_id, client_secret, tenant_id = provider.get_sharepoint_credentials(env_name)
+        # Resolve site URL from Key Vault (mirrors main.py lines 128-138)
+        if settings.key_vault.site_url_secret_name and not settings.sharepoint.site_url:
+            try:
+                site_url = provider.get_secret(settings.key_vault.site_url_secret_name)
+                settings = _dc_replace(
+                    settings,
+                    sharepoint=_dc_replace(settings.sharepoint, site_url=site_url),
+                )
+                print(f"  [auth] Resolved SharePoint site URL from Key Vault: {site_url}")
+            except Exception as exc:
+                print(f"  [WARN] Could not fetch site URL from Key Vault: {exc}")
     else:
         client_id = os.getenv("SHAREPOINT_CLIENT_ID", "")
         client_secret = os.getenv("SHAREPOINT_CLIENT_SECRET", "")
@@ -895,7 +1074,7 @@ def _build_sp_client(settings) -> SharePointClient:
         client_id=client_id,
         client_secret=client_secret,
         tenant_id=tenant_id,
-    )
+    ), settings
 
 
 def _norm(path: str) -> str:
@@ -1025,8 +1204,9 @@ def discover(
     # 3. SharePoint connection
     # ------------------------------------------------------------------
     print("\n[3/5] Connecting to SharePoint …")
-    sp = _build_sp_client(settings)
+    sp, settings = _build_sp_client(settings)
     print("      Connected.")
+    print(f"      SharePoint site: {settings.sharepoint.site_url}")
 
     scan_root = base_folder or default_root
     if not scan_root:

@@ -123,6 +123,20 @@ def run(argv: Optional[list[str]] = None) -> int:
         client_id, client_secret, tenant_id = _resolve_sharepoint_credentials(settings, provider=provider)
         logger.debug("Resolved SharePoint credentials from Key Vault or environment fallback")
 
+        # Resolve SharePoint site URL from Key Vault.  The env-var value set by
+        # _sharepoint_url_for_env() is only an emergency local-dev fallback.
+        if provider and settings.key_vault.site_url_secret_name:
+            try:
+                site_url = provider.get_secret(settings.key_vault.site_url_secret_name)
+                settings = replace(settings, sharepoint=replace(settings.sharepoint, site_url=site_url))
+                logger.debug("Resolved SharePoint site URL from Key Vault")
+            except Exception:
+                logger.warning(
+                    "Could not fetch site URL from Key Vault secret '%s'; "
+                    "falling back to env-var value.",
+                    settings.key_vault.site_url_secret_name,
+                )
+
         resolved_sql_settings = _resolve_sql_settings(settings, provider=provider)
         # Audit DB (config + log) — primary client used for ingestion orchestration
         sql_client = SqlClient(resolved_sql_settings, logger=logger)

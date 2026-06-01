@@ -133,6 +133,12 @@ def _sql_host_for_env(env_name: str) -> str:
     return os.getenv(f"SQL_SERVER_HOST_{env_key}") or os.getenv("SQL_SERVER_HOST", "localhost")
 
 
+def _sql_port_for_env(env_name: str) -> int:
+    env_key = env_name.upper().strip()
+    raw = os.getenv(f"SQL_SERVER_PORT_{env_key}") or os.getenv("SQL_SERVER_PORT", "1433")
+    return int(raw)
+
+
 def _sql_auth_mode_for_env(env_name: str) -> str:
     env_key = env_name.upper().strip()
     return (
@@ -140,6 +146,22 @@ def _sql_auth_mode_for_env(env_name: str) -> str:
         or os.getenv("SQL_AUTH_MODE")
         or "sql_password"
     ).strip()
+
+
+def _sql_odbc_driver_for_env(env_name: str) -> str:
+    env_key = env_name.upper().strip()
+    return (
+        os.getenv(f"SQL_ODBC_DRIVER_{env_key}")
+        or os.getenv("SQL_ODBC_DRIVER", "ODBC Driver 18 for SQL Server")
+    )
+
+
+def _sql_trust_cert_for_env(env_name: str) -> bool:
+    env_key = env_name.upper().strip()
+    raw = os.getenv(f"SQL_TRUST_SERVER_CERTIFICATE_{env_key}") or os.getenv(
+        "SQL_TRUST_SERVER_CERTIFICATE"
+    )
+    return _as_bool(raw, default=True)
 
 
 def _sql_username_for_env(env_name: str) -> str:
@@ -180,25 +202,34 @@ def _key_vault_url_for_env(env_name: str, vault_name: str) -> str:
 
 
 def _sharepoint_url_for_env(env_name: str) -> str:
-    env_name = env_name.lower().strip()
-    if env_name == "dev":
-        return os.getenv("SHAREPOINT_SITE_URL_DEV", "")
-    if env_name == "test":
-        return os.getenv("SHAREPOINT_SITE_URL_TEST", "")
-    return os.getenv("SHAREPOINT_SITE_URL_PROD", "")
+    """Return SharePoint site URL from optional env-var fallback only.
+
+    The authoritative value is resolved at runtime from Azure Key Vault
+    (via ``KeyVaultSettings.site_url_secret_name``).  Set
+    ``SHAREPOINT_SITE_URL_DEV`` / ``SHAREPOINT_SITE_URL_PROD`` only as an
+    emergency local-dev override when KV is unavailable.
+    """
+    env_key = env_name.upper().strip()
+    return os.getenv(f"SHAREPOINT_SITE_URL_{env_key}", "")
 
 
 def _make_sql_settings(env_name: str, database: str) -> "SqlSettings":
-    """Build a SqlSettings for any database on the shared SQL Server."""
+    """Build a SqlSettings for the given environment and database.
+
+    All SQL connection parameters (host, port, auth mode, ODBC driver,
+    TLS trust) are resolved per-environment first
+    (``SQL_SERVER_HOST_DEV`` / ``SQL_SERVER_HOST_PROD``, etc.) then fall
+    back to shared values if the env-specific var is absent.
+    """
     return SqlSettings(
         host=_sql_host_for_env(env_name),
-        port=int(os.getenv("SQL_SERVER_PORT", "1433")),
+        port=_sql_port_for_env(env_name),
         username=_sql_username_for_env(env_name),
         password=_sql_password_for_env(env_name),
         auth_mode=_sql_auth_mode_for_env(env_name),
         database=database,
-        odbc_driver=os.getenv("SQL_ODBC_DRIVER", "ODBC Driver 18 for SQL Server"),
-        trust_server_certificate=_as_bool(os.getenv("SQL_TRUST_SERVER_CERTIFICATE"), default=True),
+        odbc_driver=_sql_odbc_driver_for_env(env_name),
+        trust_server_certificate=_sql_trust_cert_for_env(env_name),
     )
 
 

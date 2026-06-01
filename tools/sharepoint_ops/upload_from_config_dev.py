@@ -126,7 +126,30 @@ def main() -> int:
     env_name = "dev"
     settings = load_settings(env_override=env_name)
     client_id, client_secret, tenant_id = _resolve_sharepoint_credentials(env_name)
-    sp = SharePointClient(settings.sharepoint.site_url, client_id, client_secret, tenant_id)
+
+    # Resolve SharePoint site URL from Key Vault (mirrors main.py logic)
+    provider_for_url = None
+    try:
+        from sharepoint_ingest.keyvault_client import maybe_build_provider as _mbp
+        provider_for_url = _mbp(settings.key_vault)
+    except Exception:
+        pass
+
+    site_url = settings.sharepoint.site_url
+    if not site_url and provider_for_url and settings.key_vault.site_url_secret_name:
+        try:
+            site_url = provider_for_url.get_secret(settings.key_vault.site_url_secret_name)
+            print(f"Resolved SharePoint site URL from Key Vault: {site_url}")
+        except Exception as exc:
+            print(f"Warning: could not fetch site URL from Key Vault: {exc}")
+
+    if not site_url:
+        raise ValueError(
+            "SharePoint site URL is required. Set SHAREPOINT_SITE_URL_DEV in .env "
+            "or ensure Key Vault secret dm-sharepoint-dev-site-url is accessible."
+        )
+
+    sp = SharePointClient(site_url, client_id, client_secret, tenant_id)
     sql_client = SqlClient(settings.sql)
 
     configs = sql_client.fetch_ingestion_configs(ingestion_scope="test", active_only=True)

@@ -1,20 +1,30 @@
 from __future__ import annotations
 
+import csv
+import datetime
+import io
 from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
 from tools.discover_new_ingestion import (
+    _MAPPING_CSV_HEADER,
+    _MAPPING_FIRST_ROW_COMMENT,
     _ProfileCandidate,
+    _SYSTEM_COLUMNS_EXCEL,
+    _SYSTEM_COLUMNS_PLAIN,
     _assert_dev_only,
     _build_discovery_groups,
+    _col_type_with_nullability,
     _configured_folder_keys,
     _generate_config_insert,
+    _generate_mapping_csv_rows,
     _list_folders_to_depth,
     _safe_suffix_from_file_name,
-    _snake_case_identifier_fragment,
     _same_filename_family,
+    _snake_case_identifier_fragment,
+    _system_col_type_with_nullability,
 )
 
 
@@ -213,6 +223,324 @@ def test_list_folders_to_depth_non_positive_returns_empty() -> None:
     sp = _FolderGraphStub({"/root": ["/root/a"]})
 
     assert _list_folders_to_depth(sp, "/root", max_depth=0) == []
+
+
+# ---------------------------------------------------------------------------
+# _col_type_with_nullability
+# ---------------------------------------------------------------------------
+
+def test_col_type_with_nullability_pk_is_not_null() -> None:
+    result = _col_type_with_nullability("VARCHAR:80", is_pk=True, padding=0.20)
+    assert result == "VARCHAR(100) NOT NULL"
+
+
+def test_col_type_with_nullability_non_pk_is_null() -> None:
+    result = _col_type_with_nullability("FLOAT", is_pk=False, padding=0.20)
+    assert result == "FLOAT NULL"
+
+
+def test_col_type_with_nullability_int_non_pk() -> None:
+    result = _col_type_with_nullability("INT", is_pk=False, padding=0.20)
+    assert result == "INT NULL"
+
+
+# ---------------------------------------------------------------------------
+# _system_col_type_with_nullability
+# ---------------------------------------------------------------------------
+
+def test_system_col_type_strips_default_expression() -> None:
+    # The extra for sp_ingest_created_utc is "NOT NULL  DEFAULT SYSUTCDATETIME()"
+    result = _system_col_type_with_nullability("DATETIME2(7)", "NOT NULL  DEFAULT SYSUTCDATETIME()")
+    assert result == "DATETIME2(7) NOT NULL"
+
+
+def test_system_col_type_null_extra() -> None:
+    result = _system_col_type_with_nullability("VARCHAR(255)", "NULL")
+    assert result == "VARCHAR(255) NULL"
+
+
+def test_system_col_type_not_null_extra_only() -> None:
+    result = _system_col_type_with_nullability("VARCHAR(100)", "NOT NULL")
+    assert result == "VARCHAR(100) NOT NULL"
+
+
+# ---------------------------------------------------------------------------
+# _generate_mapping_csv_rows
+# ---------------------------------------------------------------------------
+
+_FIXED_DATE = datetime.date(2025, 3, 24)
+
+
+def _parse_csv(text: str) -> list[dict[str, str]]:
+    reader = csv.DictReader(io.StringIO(text))
+    return list(reader)
+
+
+def test_mapping_csv_has_correct_header() -> None:
+    result = _generate_mapping_csv_rows(
+        object_name="team_effort_register",
+        source_object="team effort register",
+        data_columns={"team_member": "VARCHAR:80"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    first_line = result.splitlines()[0]
+    assert first_line == ",".join(_MAPPING_CSV_HEADER)
+
+
+def test_mapping_csv_first_data_row_has_comment() -> None:
+    result = _generate_mapping_csv_rows(
+        object_name="team_effort_register",
+        source_object="team effort register",
+        data_columns={"team_member": "VARCHAR:80", "effort_spent": "FLOAT"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    assert rows[0]["Comments"] == _MAPPING_FIRST_ROW_COMMENT
+    assert rows[1]["Comments"] == ""
+
+
+def test_mapping_csv_subsequent_rows_have_no_comment() -> None:
+    result = _generate_mapping_csv_rows(
+        object_name="my_object",
+        source_object="my source",
+        data_columns={"col_a": "INT", "col_b": "FLOAT"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    # col_a → first business row → has comment; col_b → no comment; system cols → no comment
+    assert rows[0]["Comments"] == _MAPPING_FIRST_ROW_COMMENT
+    for row in rows[1:]:
+        assert row["Comments"] == ""
+
+
+def test_mapping_csv_object_and_source_object_in_every_row() -> None:
+    result = _generate_mapping_csv_rows(
+        object_name="team_effort_register",
+        source_object="team effort register",
+        data_columns={"col_a": "INT"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    for row in rows:
+        assert row["Object name"] == "team_effort_register"
+        assert row["Source object"] == "team effort register"
+
+
+def test_mapping_csv_date_format_is_dd_mm_yyyy() -> None:
+    result = _generate_mapping_csv_rows(
+        object_name="obj",
+        source_object="src",
+        data_columns={"col": "INT"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    assert rows[0]["Last update"] == "24/03/2025"
+
+
+def test_mapping_csv_pk_column_marked_y() -> None:
+    result = _generate_mapping_csv_rows(
+        object_name="obj",
+        source_object="src",
+        data_columns={"my_id": "INT", "name": "VARCHAR:50"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=["my_id"],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    pk_row = next(r for r in rows if r["Source column"] == "my_id")
+    non_pk_row = next(r for r in rows if r["Source column"] == "name")
+    assert pk_row["Primary key?"] == "Y"
+    assert non_pk_row["Primary key?"] == ""
+
+
+def test_mapping_csv_pk_column_has_not_null_type() -> None:
+    result = _generate_mapping_csv_rows(
+        object_name="obj",
+        source_object="src",
+        data_columns={"my_id": "INT"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=["my_id"],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    pk_row = next(r for r in rows if r["Source column"] == "my_id")
+    assert "NOT NULL" in pk_row["Staging type"]
+    assert "NOT NULL" in pk_row["Integrated type"]
+
+
+def test_mapping_csv_non_pk_column_has_null_type() -> None:
+    result = _generate_mapping_csv_rows(
+        object_name="obj",
+        source_object="src",
+        data_columns={"description": "VARCHAR:50"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    row = next(r for r in rows if r["Source column"] == "description")
+    assert "NULL" in row["Staging type"]
+    assert "NOT NULL" not in row["Staging type"]
+
+
+def test_mapping_csv_system_columns_appended_after_business_columns() -> None:
+    result = _generate_mapping_csv_rows(
+        object_name="obj",
+        source_object="src",
+        data_columns={"biz_col": "INT"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    # Business columns use Source column; system columns have Source column="" so use Staging column
+    source_col_names = [r["Source column"] for r in rows]
+    staging_col_names = [r["Staging column"] for r in rows]
+    assert source_col_names.index("biz_col") < staging_col_names.index("source_file_name")
+    assert "sp_ingest_created_utc" in staging_col_names
+    assert "sp_ingest_modified_utc" in staging_col_names
+
+
+def test_mapping_csv_system_columns_strip_default_expression() -> None:
+    result = _generate_mapping_csv_rows(
+        object_name="obj",
+        source_object="src",
+        data_columns={"biz_col": "INT"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    # System columns have Source column="" — use Staging column to locate them
+    created_row = next(r for r in rows if r["Staging column"] == "sp_ingest_created_utc")
+    # Source column must be empty (engine-managed, not present in source file)
+    assert created_row["Source column"] == ""
+    # DEFAULT clause must NOT appear in the mapping type string
+    assert "DEFAULT" not in created_row["Staging type"]
+    assert "DATETIME2(7) NOT NULL" == created_row["Staging type"]
+
+
+def test_mapping_csv_excel_system_columns_include_excel_tab_name() -> None:
+    result = _generate_mapping_csv_rows(
+        object_name="obj",
+        source_object="src",
+        data_columns={"biz_col": "INT"},
+        system_columns=_SYSTEM_COLUMNS_EXCEL,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    # System columns use Staging column (Source column is empty for engine-managed columns)
+    staging_col_names = [r["Staging column"] for r in rows]
+    assert "excel_tab_name" in staging_col_names
+
+
+def test_mapping_csv_staging_and_integrated_types_are_identical() -> None:
+    """Staging type and Integrated type should match for auto-generated rows."""
+    result = _generate_mapping_csv_rows(
+        object_name="obj",
+        source_object="src",
+        data_columns={"col_a": "VARCHAR:40", "col_b": "FLOAT"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    for row in rows:
+        assert row["Staging type"] == row["Integrated type"]
+
+
+def test_mapping_csv_source_and_staging_column_names_are_identical() -> None:
+    """Business columns: Source column == Staging column == Integrated column.
+    System columns (engine-managed, not from source file): Source column is empty,
+    Staging column == Integrated column (following the column_mapping_json pattern
+    where system columns are never keys in the source→destination mapping).
+    """
+    result = _generate_mapping_csv_rows(
+        object_name="obj",
+        source_object="src",
+        data_columns={"my_col": "INT"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    sys_col_names_lower = {c[0].lower() for c in _SYSTEM_COLUMNS_PLAIN}
+    for row in rows:
+        if row["Staging column"].lower() in sys_col_names_lower:
+            # System columns: no source-file key → Source column is blank
+            assert row["Source column"] == ""
+            assert row["Staging column"] == row["Integrated column"]
+        else:
+            # Business columns: identity source→dest mapping
+            assert row["Source column"] == row["Staging column"] == row["Integrated column"]
+
+
+def test_mapping_csv_transform_column_is_blank() -> None:
+    result = _generate_mapping_csv_rows(
+        object_name="obj",
+        source_object="src",
+        data_columns={"col": "INT"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    for row in rows:
+        assert row["Transform"] == ""
+
+
+def test_mapping_csv_defaults_date_to_today_when_not_supplied() -> None:
+    """When as_of_date is omitted, today's date is used – just check the format."""
+    result = _generate_mapping_csv_rows(
+        object_name="obj",
+        source_object="src",
+        data_columns={"col": "INT"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+    )
+    rows = _parse_csv(result)
+    date_val = rows[0]["Last update"]
+    # Must be DD/MM/YYYY (10 chars, two slashes at positions 2 and 5)
+    assert len(date_val) == 10
+    assert date_val[2] == "/" and date_val[5] == "/"
+
+
+def test_mapping_csv_system_columns_not_duplicated_when_in_data_columns() -> None:
+    """If a profiled data dict somehow contains a system column name, it must not
+    appear twice – the system columns list takes precedence and the data entry
+    is skipped.
+
+    System columns have Source column="" so use Staging column for the uniqueness check.
+    """
+    data_with_sys = {
+        "biz_col": "INT",
+        "source_file_name": "VARCHAR:200",  # duplicate of a system column
+    }
+    result = _generate_mapping_csv_rows(
+        object_name="obj",
+        source_object="src",
+        data_columns=data_with_sys,
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    # source_file_name is a system column → Source column is "", locate via Staging column
+    source_file_rows = [r for r in rows if r["Staging column"] == "source_file_name"]
+    assert len(source_file_rows) == 1, "source_file_name should appear exactly once"
+    # Confirm Source column is empty (engine-managed, not a key in column_mapping_json)
+    assert source_file_rows[0]["Source column"] == ""
 
 
 
