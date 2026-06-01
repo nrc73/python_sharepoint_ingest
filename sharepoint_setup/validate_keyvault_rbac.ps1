@@ -502,9 +502,9 @@ foreach ($environmentName in $targetEnvironments) {
         }
         else {
             $roles = @($roleResult.Data)
-            $roleNames = $roles |
+            $roleNames = @($roles |
                 Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.roleDefinitionName) } |
-                Select-Object -ExpandProperty roleDefinitionName -Unique
+                Select-Object -ExpandProperty roleDefinitionName -Unique)
 
             if ($roleNames.Count -eq 0) {
                 Add-Result -Summary $summary -Level "WARN" -Message "No direct RBAC assignments found for oid '$tokenObjectId' at vault scope (group-based assignment may still apply)."
