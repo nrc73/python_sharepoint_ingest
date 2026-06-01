@@ -538,15 +538,39 @@ foreach ($environmentName in $targetEnvironments) {
         $clientIdSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_CLIENT_ID_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues -DefaultValue "dm-sharepoint-$environmentName-client-id"
         $clientSecretSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_CLIENT_SECRET_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues -DefaultValue "dm-sharepoint-$environmentName-client-secret"
         $tenantSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_TENANT_ID_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues -DefaultValue "dm-sharepoint-$environmentName-tenant-id"
-        $sqlUserSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_SQL_USERNAME_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues
-        $sqlPasswordSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_SQL_PASSWORD_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues
+        $sqlUserSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_SQL_USERNAME_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues -DefaultValue "dm-sql-$environmentName-username"
+        $sqlPasswordSecretName = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_SQL_PASSWORD_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues -DefaultValue "dm-sql-$environmentName-password"
+        $sqlAuthModeRaw = Resolve-PerEnvironmentValue -BaseName "SQL_AUTH_MODE" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues
+        $sqlAuthMode = if ([string]::IsNullOrWhiteSpace($sqlAuthModeRaw)) { "" } else { $sqlAuthModeRaw.Trim().ToLowerInvariant() }
+
+        $passwordlessSqlAuthModes = @(
+            "windows",
+            "sspi",
+            "trusted_connection",
+            "ad_integrated",
+            "active_directory_integrated",
+            "managed_identity"
+        )
+        $credentialSqlAuthModes = @(
+            "sql_password",
+            "ad_password",
+            "active_directory_password"
+        )
+
+        $isPasswordlessSqlAuth = $passwordlessSqlAuthModes -contains $sqlAuthMode
+        $isCredentialSqlAuth = $credentialSqlAuthModes -contains $sqlAuthMode
 
         Add-Result -Summary $summary -Level "PASS" -Message "Expected secret names resolved for environment '$environmentName'."
         Write-Host "[INFO][$environmentName] client_id_secret_name      = $clientIdSecretName"
         Write-Host "[INFO][$environmentName] client_secret_secret_name  = $clientSecretSecretName"
         Write-Host "[INFO][$environmentName] tenant_id_secret_name      = $tenantSecretName"
-        if (-not [string]::IsNullOrWhiteSpace($sqlUserSecretName)) { Write-Host "[INFO][$environmentName] sql_username_secret_name  = $sqlUserSecretName" }
-        if (-not [string]::IsNullOrWhiteSpace($sqlPasswordSecretName)) { Write-Host "[INFO][$environmentName] sql_password_secret_name  = $sqlPasswordSecretName" }
+        if (-not [string]::IsNullOrWhiteSpace($sqlAuthMode)) {
+            Write-Host "[INFO][$environmentName] sql_auth_mode            = $sqlAuthMode"
+        }
+        if ($isCredentialSqlAuth -or -not $isPasswordlessSqlAuth) {
+            Write-Host "[INFO][$environmentName] sql_username_secret_name  = $sqlUserSecretName"
+            Write-Host "[INFO][$environmentName] sql_password_secret_name  = $sqlPasswordSecretName"
+        }
 
         $secretSpecs = @(
             [pscustomobject]@{ Name = $clientIdSecretName; IsRequired = $true; Label = "SharePoint Client ID" }
@@ -554,8 +578,31 @@ foreach ($environmentName in $targetEnvironments) {
             [pscustomobject]@{ Name = $tenantSecretName; IsRequired = $true; Label = "SharePoint Tenant ID" }
         )
 
-        if (-not [string]::IsNullOrWhiteSpace($sqlUserSecretName)) { $secretSpecs += [pscustomobject]@{ Name = $sqlUserSecretName; IsRequired = $true; Label = "SQL Username" } }
-        if (-not [string]::IsNullOrWhiteSpace($sqlPasswordSecretName)) { $secretSpecs += [pscustomobject]@{ Name = $sqlPasswordSecretName; IsRequired = $true; Label = "SQL Password" } }
+        if ($isPasswordlessSqlAuth) {
+            Add-Result -Summary $summary -Level "PASS" -Message "Skipping SQL credential secret tests: SQL auth mode '$sqlAuthMode' is passwordless."
+        }
+        elseif ($isCredentialSqlAuth) {
+            $secretSpecs += [pscustomobject]@{ Name = $sqlUserSecretName; IsRequired = $true; Label = "SQL Username" }
+            $secretSpecs += [pscustomobject]@{ Name = $sqlPasswordSecretName; IsRequired = $true; Label = "SQL Password" }
+        }
+        else {
+            if ([string]::IsNullOrWhiteSpace($sqlAuthMode)) {
+                Add-Result -Summary $summary -Level "WARN" -Message "SQL auth mode is not configured; SQL credential secret tests will run only if explicit secret names are configured."
+            }
+            else {
+                Add-Result -Summary $summary -Level "WARN" -Message "SQL auth mode '$sqlAuthMode' is not recognized; SQL credential secret tests will run only if explicit secret names are configured."
+            }
+
+            $sqlUserSecretNameConfigured = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_SQL_USERNAME_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues
+            $sqlPasswordSecretNameConfigured = Resolve-PerEnvironmentValue -BaseName "KEYVAULT_SQL_PASSWORD_SECRET_NAME" -EnvironmentName $environmentName -DotEnvValues $dotEnvValues
+
+            if (-not [string]::IsNullOrWhiteSpace($sqlUserSecretNameConfigured)) {
+                $secretSpecs += [pscustomobject]@{ Name = $sqlUserSecretNameConfigured; IsRequired = $true; Label = "SQL Username" }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($sqlPasswordSecretNameConfigured)) {
+                $secretSpecs += [pscustomobject]@{ Name = $sqlPasswordSecretNameConfigured; IsRequired = $true; Label = "SQL Password" }
+            }
+        }
 
         foreach ($spec in $secretSpecs) {
             $secretTest = Get-SecretReadResult -VaultName $resolvedVaultName -SecretName $spec.Name -IsRequired $spec.IsRequired -OutputValues $OutputSecretValues.IsPresent
