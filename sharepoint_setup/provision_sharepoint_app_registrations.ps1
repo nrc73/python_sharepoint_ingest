@@ -9,9 +9,13 @@ param(
     [string]$DevSiteUrl = "https://mycompany715.sharepoint.com/sites/data_ingest_dev",
     [string]$ProdSiteUrl = "https://mycompany715.sharepoint.com/sites/data_ingestion_prod",
     [string]$DevSqlServer = "localhost:1433",
-    [string]$DevSqlDatabase = "ingest_dev",
+    [string]$DevSqlAudDatabase = "ingest_audit_dev",
+    [string]$DevSqlStgDatabase = "ingest_stg_dev",
+    [string]$DevSqlIntDatabase = "ingest_int_dev",
     [string]$ProdSqlServer = "localhost:1433",
-    [string]$ProdSqlDatabase = "ingest_prod",
+    [string]$ProdSqlAudDatabase = "ingest_audit_prod",
+    [string]$ProdSqlStgDatabase = "ingest_stg_prod",
+    [string]$ProdSqlIntDatabase = "ingest_int_prod",
     [switch]$RotateClientSecrets,
     [switch]$SkipAdminConsent,
     [switch]$SkipSiteGrant
@@ -144,11 +148,15 @@ foreach ($e in $envs) {
     $tenantSecretName = "dm-sharepoint-$e-tenant-id"
     $siteSecretName = "dm-sharepoint-$e-site-url"
     $sqlServerSecretName = "dm-sql-$e-server"
-    $sqlDbSecretName = "dm-sql-$e-database"
+    $sqlAudDbSecretName  = "dm-sql-$e-aud-database"
+    $sqlStgDbSecretName  = "dm-sql-$e-stg-database"
+    $sqlIntDbSecretName  = "dm-sql-$e-int-database"
 
-    $siteUrl = if ($e -eq "dev") { Normalize-Url $DevSiteUrl } else { Normalize-Url $ProdSiteUrl }
-    $sqlServer = if ($e -eq "dev") { $DevSqlServer } else { $ProdSqlServer }
-    $sqlDb = if ($e -eq "dev") { $DevSqlDatabase } else { $ProdSqlDatabase }
+    $siteUrl       = if ($e -eq "dev") { Normalize-Url $DevSiteUrl } else { Normalize-Url $ProdSiteUrl }
+    $sqlServer     = if ($e -eq "dev") { $DevSqlServer }     else { $ProdSqlServer }
+    $sqlAudDatabase = if ($e -eq "dev") { $DevSqlAudDatabase } else { $ProdSqlAudDatabase }
+    $sqlStgDatabase = if ($e -eq "dev") { $DevSqlStgDatabase } else { $ProdSqlStgDatabase }
+    $sqlIntDatabase = if ($e -eq "dev") { $DevSqlIntDatabase } else { $ProdSqlIntDatabase }
 
     $appLookup = Invoke-AzJson -Arguments @("ad", "app", "list", "--display-name", $displayName, "--query", "[?displayName=='$displayName'] | [0]")
     $app = $appLookup.Data
@@ -236,10 +244,12 @@ foreach ($e in $envs) {
         Write-Host "[PASS] Existing Key Vault client secret retained for $displayName" -ForegroundColor Green
     }
 
-    Set-KvSecret -VaultName $targetVaultName -Name $tenantSecretName -Value $TenantId
-    Set-KvSecret -VaultName $targetVaultName -Name $siteSecretName -Value $siteUrl
+    Set-KvSecret -VaultName $targetVaultName -Name $tenantSecretName   -Value $TenantId
+    Set-KvSecret -VaultName $targetVaultName -Name $siteSecretName     -Value $siteUrl
     Set-KvSecret -VaultName $targetVaultName -Name $sqlServerSecretName -Value $sqlServer
-    Set-KvSecret -VaultName $targetVaultName -Name $sqlDbSecretName -Value $sqlDb
+    Set-KvSecret -VaultName $targetVaultName -Name $sqlAudDbSecretName  -Value $sqlAudDatabase
+    Set-KvSecret -VaultName $targetVaultName -Name $sqlStgDbSecretName  -Value $sqlStgDatabase
+    Set-KvSecret -VaultName $targetVaultName -Name $sqlIntDbSecretName  -Value $sqlIntDatabase
 
     if (-not $SkipSiteGrant.IsPresent) {
         Write-Host "[INFO] Site grant step is now manual and SharePoint-only." -ForegroundColor Cyan

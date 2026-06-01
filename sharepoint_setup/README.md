@@ -21,14 +21,17 @@ For home/dev setups, use Windows Integrated auth against the local SQL instance.
 Recommended `.env` settings:
 
 ```dotenv
-SQL_SERVER_HOST=.
 SQL_SERVER_HOST_DEV=.
 SQL_AUTH_MODE_DEV=sspi
-SQL_DATABASE_DEV=ingest_dev
+SQL_DATABASE_AUD_DEV=ingest_audit_dev
+SQL_DATABASE_STG_DEV=ingest_stg_dev
+SQL_DATABASE_INT_DEV=ingest_int_dev
 
 SQL_SERVER_HOST_PROD=your-prod-sql-server.database.windows.net
 SQL_AUTH_MODE_PROD=sspi
-SQL_DATABASE_PROD=ingest_prod
+SQL_DATABASE_AUD_PROD=ingest_audit_prod
+SQL_DATABASE_STG_PROD=ingest_stg_prod
+SQL_DATABASE_INT_PROD=ingest_int_prod
 ```
 
 This aligns with a common mixed setup:
@@ -49,8 +52,8 @@ Validate:
 python sharepoint_setup\sql_connection_test.py --env all
 ```
 
-Ensure your local SQL instance includes `ingest_dev` and `ingest_prod`.
-If needed, create both databases in SSMS and run `bootstrap_sql_schema.py` for each environment.
+Ensure your local SQL instance includes all six databases (aud/stg/int for each environment).
+If needed, create them in SSMS and run `bootstrap_sql_schema.py` for each environment and database.
 
 ## 2) Initialize SQL schema
 
@@ -140,6 +143,16 @@ Then align `.env` secret-name variables for each environment (usually not needed
 Use the provisioning script to create/refine dev/prod SharePoint app registrations and push their credentials/config into Key Vault.
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File .\sharepoint_setup\provision_sharepoint_app_registrations.ps1 -Env all `
+  -DevSqlServer "." `
+  -DevSqlAudDatabase "ingest_audit_dev" -DevSqlStgDatabase "ingest_stg_dev" -DevSqlIntDatabase "ingest_int_dev" `
+  -ProdSqlServer "your-prod-sql-server.database.windows.net" `
+  -ProdSqlAudDatabase "ingest_audit_prod" -ProdSqlStgDatabase "ingest_stg_prod" -ProdSqlIntDatabase "ingest_int_prod"
+```
+
+The SQL parameters have workable defaults matching the standard DB names, so for a default install you can omit them:
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\sharepoint_setup\provision_sharepoint_app_registrations.ps1 -Env all
 ```
 
@@ -150,9 +163,10 @@ What this script does:
   - `spn-sharepoint-ingest-prod`
 - ensures service principals exist
 - assigns **Office 365 SharePoint Online** application permission `Sites.Selected`
+- assigns **Microsoft Graph** application permission `Sites.ReadWrite.All` (required — the legacy SPO REST `/_api/` path is blocked on this tenant)
 - attempts admin consent
 - generates client secrets (or keeps existing unless `-RotateClientSecrets`)
-- stores values in environment-specific Key Vaults:
+- stores all eight values in environment-specific Key Vaults:
   - `kv-sp-ingest-dev` (for `-Env dev`)
   - `kv-sp-ingest-prod` (for `-Env prod`)
   - `dm-sharepoint-<env>-client-id`
@@ -160,12 +174,10 @@ What this script does:
   - `dm-sharepoint-<env>-tenant-id`
   - `dm-sharepoint-<env>-site-url`
   - `dm-sql-<env>-server`
-  - `dm-sql-<env>-int-database`
-  - `dm-sql-<env>-stg-database`
   - `dm-sql-<env>-aud-database`
+  - `dm-sql-<env>-stg-database`
+  - `dm-sql-<env>-int-database`
 - prints the SharePoint/PnP commands to grant site-specific `Write` access
-
-> Runtime and setup in this repo are SharePoint-API based; Microsoft Graph permissions are not required.
 
 Useful options:
 
