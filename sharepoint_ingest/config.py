@@ -161,6 +161,15 @@ def _key_vault_name_for_env(env_name: str) -> str:
     return _secret_name_for_env("KEY_VAULT_NAME", env_name, default="")
 
 
+def _resource_group_for_env(env_name: str) -> Optional[str]:
+    env_key = env_name.upper().strip()
+    return (
+        os.getenv(f"AZURE_RESOURCE_GROUP_{env_key}")
+        or os.getenv("AZURE_RESOURCE_GROUP")
+        or None
+    )
+
+
 def _key_vault_url_for_env(env_name: str, vault_name: str) -> str:
     resolved_url = _secret_name_for_env("KEY_VAULT_URL", env_name, default="")
     if resolved_url:
@@ -280,7 +289,7 @@ def load_settings(env_override: Optional[str] = None) -> AppSettings:
         enable_chunked_parquet=_as_bool(os.getenv("ENABLE_CHUNKED_PARQUET"), default=True),
         ingest_chunk_size_rows=max(1, int(os.getenv("INGEST_CHUNK_SIZE_ROWS", "5000"))),
         azure_subscription_id=os.getenv("AZURE_SUBSCRIPTION_ID") or os.getenv("AZURE_SUBSCRIPTION"),
-        azure_resource_group=os.getenv("AZURE_RESOURCE_GROUP"),
+        azure_resource_group=_resource_group_for_env(env_name),
         sql=aud_settings,          # primary connection → audit DB (config + log)
         sql_stg=stg_settings,      # staging DB
         sql_int=int_settings,      # integrated/destination DB
