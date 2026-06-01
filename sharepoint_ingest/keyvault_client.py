@@ -75,6 +75,32 @@ class KeyVaultSecretProvider:
             "KEYVAULT_SQL_PASSWORD_SECRET_NAME[_ENV], or SQL_SERVER_USERNAME[_ENV] / SQL_SERVER_PASSWORD[_ENV]."
         )
 
+    def _try_get_secret(self, secret_name: Optional[str]) -> Optional[str]:
+        """Return the secret value or None if the name is blank or the read fails."""
+        if not secret_name or not secret_name.strip():
+            return None
+        try:
+            value = self.get_secret(secret_name.strip())
+            return value if value and value.strip() else None
+        except Exception:
+            return None
+
+    def get_sql_connection_info(self) -> dict[str, Optional[str]]:
+        """
+        Resolve SQL server hostname and per-role database names from Key Vault.
+
+        Returns a dict with keys ``server``, ``aud_database``, ``stg_database``,
+        and ``int_database``.  Each value is either the resolved string from Key
+        Vault or ``None`` when the secret name is not configured or the read
+        fails (callers should fall back to env-var defaults in that case).
+        """
+        return {
+            "server":       self._try_get_secret(self._settings.sql_server_secret_name),
+            "aud_database": self._try_get_secret(self._settings.sql_aud_database_secret_name),
+            "stg_database": self._try_get_secret(self._settings.sql_stg_database_secret_name),
+            "int_database": self._try_get_secret(self._settings.sql_int_database_secret_name),
+        }
+
 
 def maybe_build_provider(settings: KeyVaultSettings) -> Optional[KeyVaultSecretProvider]:
     if not settings.vault_url:
