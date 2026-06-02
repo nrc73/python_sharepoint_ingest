@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from sharepoint_ingest.config import load_settings
-from sharepoint_ingest.keyvault_client import maybe_build_provider
+from sharepoint_ingest.keyvault_client import KeyVaultSecretProvider, maybe_build_provider
 from sharepoint_ingest.sharepoint_client import SharePointClient
 
 
@@ -41,6 +41,53 @@ def _folder_for_env(env_name: str, default_folder: str | None) -> str:
     raise ValueError(
         f"No folder supplied for env '{env_name}'. Use --folder or set SHAREPOINT_TEST_FOLDER_{env_key}."
     )
+
+
+def _resolve_site_url_from_keyvault(
+    provider: KeyVaultSecretProvider,
+    secret_name: str,
+    vault_url: str,
+    env_name: str,
+) -> str:
+    """Read the SharePoint site URL exclusively from Key Vault.
+
+    On failure, raises a descriptive exception that includes the vault URL,
+    secret name, and the stored value when readable (to help diagnose blank
+    or incorrectly-seeded secrets).
+
+    No environment-variable fallback is used — the Key Vault secret is the
+    single authoritative source.
+    """
+    try:
+        value = provider.get_secret(secret_name)
+    except Exception as exc:
+        raise ValueError(
+            f"SP_SITE_URL_KEYVAULT_READ_FAILED\n"
+            f"  Key Vault URL       : {vault_url}\n"
+            f"  Key Vault secret    : {secret_name}\n"
+            f"  Stored secret value : <READ FAILED — {exc}>\n"
+            f"  Resolution          : Ensure the secret exists in the vault and\n"
+            f"                        that your az CLI identity has 'Key Vault Secrets User'\n"
+            f"                        RBAC at the vault scope.\n"
+            f"  Seeding command     : python sharepoint_setup/keyvault_setup.py --env {env_name} "
+            f"--vault-url {vault_url} --site-url https://<tenant>.sharepoint.com/sites/<site-name> ..."
+        ) from exc
+
+    stored_display = repr(value) if value is not None else "<None>"
+
+    if not value or not value.strip():
+        raise ValueError(
+            f"SP_SITE_URL_MISSING_IN_KEYVAULT\n"
+            f"  Key Vault URL       : {vault_url}\n"
+            f"  Key Vault secret    : {secret_name}\n"
+            f"  Stored secret value : {stored_display}\n"
+            f"  Expected shape      : https://<tenant>.sharepoint.com/sites/<site-name>\n"
+            f"  Resolution          : Seed the secret with the correct SharePoint site URL:\n"
+            f"                        python sharepoint_setup/keyvault_setup.py --env {env_name} "
+            f"--vault-url {vault_url} --site-url https://<tenant>.sharepoint.com/sites/<site-name> ..."
+        )
+
+    return value.strip()
 
 
 def _format_sharepoint_error(exc: Exception) -> str:
@@ -91,7 +138,7 @@ def _format_sharepoint_error(exc: Exception) -> str:
     if "404" in message or "not found" in lowered:
         return (
             "SP_FOLDER_OR_SITE_NOT_FOUND: site URL or folder path is wrong (404). "
-            "Verify SHAREPOINT_SITE_URL_DEV/PROD and the folder server-relative path. "
+            "Verify the 'dm-sharepoint-{env}-site-url' secret in Key Vault and the folder server-relative path. "
             f"Details: {message}"
         )
 
@@ -103,6 +150,10 @@ def _format_sharepoint_error(exc: Exception) -> str:
             f"Details: {message}"
         )
 
+    if "sp_site_url_missing_in_keyvault" in lowered or "sp_site_url_keyvault_read_failed" in lowered:
+        # Already a well-formatted diagnostic — pass through as-is
+        return message
+
     return f"SP_AUTH_UNKNOWN_ERROR: {message}"
 
 
@@ -110,21 +161,31 @@ def _run_for_env(env_name: str, default_folder: str | None) -> None:
     settings = load_settings(env_override=env_name)
     provider = maybe_build_provider(settings.key_vault)
 
-    if provider is not None:
-        client_id, client_secret, tenant_id = provider.get_sharepoint_credentials(env_name)
-    else:
-        env_key = env_name.upper()
-        client_id = os.getenv(f"SHAREPOINT_CLIENT_ID_{env_key}", "") or os.getenv("SHAREPOINT_CLIENT_ID", "")
-        client_secret = os.getenv(f"SHAREPOINT_CLIENT_SECRET_{env_key}", "") or os.getenv("SHAREPOINT_CLIENT_SECRET", "")
-        tenant_id = os.getenv(f"SHAREPOINT_TENANT_ID_{env_key}", "") or os.getenv("SHAREPOINT_TENANT_ID", "")
+    if provider is None:
+        vault_url = settings.key_vault.vault_url or settings.key_vault.vault_name
+        raise ValueError(
+            f"SP_NO_KEYVAULT_CONFIGURED\n"
+            f"  No Key Vault URL could be resolved for env '{env_name}'.\n"
+            f"  Expected env vars   : KEY_VAULT_URL_{env_name.upper()} or KEY_VAULT_NAME_{env_name.upper()}\n"
+            f"  Current value       : {vault_url!r}\n"
+            f"  Resolution          : Set KEY_VAULT_URL_{env_name.upper()}=https://<vault-name>.vault.azure.net/ in .env"
+        )
+
+    vault_url = settings.key_vault.vault_url
+    site_url_secret = settings.key_vault.site_url_secret_name or f"dm-sharepoint-{env_name.lower()}-site-url"
+
+    # Resolve SharePoint site URL from Key Vault — no env-var fallback.
+    site_url = _resolve_site_url_from_keyvault(provider, site_url_secret, vault_url, env_name)
+
+    client_id, client_secret, tenant_id = provider.get_sharepoint_credentials(env_name)
 
     if not (client_id and client_secret and tenant_id):
-        raise ValueError("Missing SharePoint credentials from Key Vault and environment fallback")
+        raise ValueError("Missing SharePoint credentials from Key Vault")
 
     folder = _folder_for_env(env_name, default_folder)
 
     sp_client = SharePointClient(
-        site_url=settings.sharepoint.site_url,
+        site_url=site_url,
         client_id=client_id,
         client_secret=client_secret,
         tenant_id=tenant_id,
@@ -132,9 +193,10 @@ def _run_for_env(env_name: str, default_folder: str | None) -> None:
 
     count = sp_client.get_file_count(folder)
     print(f"[{env_name}] SharePoint authentication successful")
-    print(f"[{env_name}] Site URL : {settings.sharepoint.site_url}")
-    print(f"[{env_name}] Folder   : {folder}")
-    print(f"[{env_name}] FileCount: {count}")
+    print(f"[{env_name}] Site URL         : {site_url}")
+    print(f"[{env_name}] Site URL source  : Key Vault secret '{site_url_secret}' in {vault_url}")
+    print(f"[{env_name}] Folder           : {folder}")
+    print(f"[{env_name}] FileCount        : {count}")
 
 
 def main() -> int:
