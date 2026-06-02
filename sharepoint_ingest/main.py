@@ -80,6 +80,62 @@ def _resolve_sharepoint_credentials(settings, provider=None) -> tuple[str, str, 
     return client_id, client_secret, tenant_id
 
 
+def _resolve_database_names(settings, provider, logger):
+    """Fetch database names from Azure Key Vault and inject them into settings.
+
+    This is the *only* source of truth for the three database names (aud / stg /
+    int).  No env-var fallback exists — if Key Vault is unreachable or any secret
+    is absent the application raises immediately rather than silently connecting
+    to a wrong database.
+
+    Raises
+    ------
+    ValueError
+        If ``provider`` is ``None`` (Key Vault not configured) or if any of the
+        three database name secrets are missing or blank.
+    """
+    if provider is None:
+        raise ValueError(
+            "Azure Key Vault is not configured (KEY_VAULT_URL / KEY_VAULT_NAME is "
+            "missing).  Database names must be resolved from Key Vault — set "
+            "KEY_VAULT_URL_DEV / KEY_VAULT_URL_PROD in your environment."
+        )
+
+    kv_info = provider.get_sql_connection_info()
+
+    missing = [
+        role
+        for role in ("aud_database", "stg_database", "int_database")
+        if not kv_info.get(role)
+    ]
+    if missing:
+        raise ValueError(
+            f"The following database name secret(s) could not be resolved from "
+            f"Azure Key Vault: {missing}.  Ensure the secrets "
+            f"dm-sql-{{env}}-aud-database, dm-sql-{{env}}-stg-database, and "
+            f"dm-sql-{{env}}-int-database are present in the vault and that the "
+            f"caller identity has 'Key Vault Secrets User' on each."
+        )
+
+    aud_db = kv_info["aud_database"]
+    stg_db = kv_info["stg_database"]
+    int_db = kv_info["int_database"]
+
+    logger.debug(
+        "Resolved database names from Key Vault: aud=%s stg=%s int=%s",
+        aud_db, stg_db, int_db,
+    )
+
+    from dataclasses import replace as _dc_replace
+    updated_settings = _dc_replace(
+        settings,
+        sql=_dc_replace(settings.sql, database=aud_db),
+        sql_stg=_dc_replace(settings.sql_stg, database=stg_db),
+        sql_int=_dc_replace(settings.sql_int, database=int_db),
+    )
+    return updated_settings
+
+
 def _resolve_sql_settings(settings, provider=None):
     sql_settings = settings.sql
     auth_mode = sql_settings.auth_mode
@@ -119,6 +175,9 @@ def run(argv: Optional[list[str]] = None) -> int:
 
     try:
         provider = maybe_build_provider(settings.key_vault)
+
+        # Resolve database names from Key Vault — mandatory, no env-var fallback.
+        settings = _resolve_database_names(settings, provider, logger)
 
         client_id, client_secret, tenant_id = _resolve_sharepoint_credentials(settings, provider=provider)
         logger.debug("Resolved SharePoint credentials from Key Vault or environment fallback")

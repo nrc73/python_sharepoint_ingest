@@ -88,46 +88,6 @@ class AppSettings:
     email: EmailSettings
 
 
-# ---------------------------------------------------------------------------
-# Per-environment database name helpers
-# ---------------------------------------------------------------------------
-
-def _int_database_for_env(env_name: str) -> str:
-    """Return the *integrated* (destination) DB name for the given environment."""
-    env_name = env_name.lower().strip()
-    if env_name == "dev":
-        return os.getenv("SQL_DATABASE_INT_DEV", "ingest_int_dev")
-    if env_name == "test":
-        return os.getenv("SQL_DATABASE_INT_TEST", "ingest_int_test")
-    return os.getenv("SQL_DATABASE_INT_PROD", "ingest_int_prod")
-
-
-def _stg_database_for_env(env_name: str) -> str:
-    """Return the *staging* DB name for the given environment."""
-    env_name = env_name.lower().strip()
-    if env_name == "dev":
-        return os.getenv("SQL_DATABASE_STG_DEV", "ingest_stg_dev")
-    if env_name == "test":
-        return os.getenv("SQL_DATABASE_STG_TEST", "ingest_stg_test")
-    return os.getenv("SQL_DATABASE_STG_PROD", "ingest_stg_prod")
-
-
-def _aud_database_for_env(env_name: str) -> str:
-    """Return the *audit* DB name (config + log tables) for the given environment."""
-    env_name = env_name.lower().strip()
-    if env_name == "dev":
-        return os.getenv("SQL_DATABASE_AUD_DEV", "ingest_audit_dev")
-    if env_name == "test":
-        return os.getenv("SQL_DATABASE_AUD_TEST", "ingest_audit_test")
-    return os.getenv("SQL_DATABASE_AUD_PROD", "ingest_audit_prod")
-
-
-# Keep a legacy alias so any external code that calls _database_for_env
-# still receives the integrated-DB name (previously "ingest_dev"/"ingest_prod").
-def _database_for_env(env_name: str) -> str:
-    return _int_database_for_env(env_name)
-
-
 def _sql_host_for_env(env_name: str) -> str:
     env_key = env_name.upper().strip()
     return os.getenv(f"SQL_SERVER_HOST_{env_key}") or os.getenv("SQL_SERVER_HOST", "localhost")
@@ -238,10 +198,12 @@ def load_settings(env_override: Optional[str] = None) -> AppSettings:
 
     env_name = (env_override or os.getenv("APP_ENV") or "prod").lower().strip()
 
-    # Three separate DB connections — same host/credentials, different database names.
-    aud_settings = _make_sql_settings(env_name, _aud_database_for_env(env_name))
-    stg_settings = _make_sql_settings(env_name, _stg_database_for_env(env_name))
-    int_settings = _make_sql_settings(env_name, _int_database_for_env(env_name))
+    # Three separate DB connections — database names are resolved from Azure Key Vault
+    # at runtime in main.py via KeyVaultSecretProvider.get_sql_connection_info().
+    # The empty string placeholder is intentional; main.py will inject the real names.
+    aud_settings = _make_sql_settings(env_name, "")
+    stg_settings = _make_sql_settings(env_name, "")
+    int_settings = _make_sql_settings(env_name, "")
 
     key_vault_name = _key_vault_name_for_env(env_name)
     key_vault_url = _key_vault_url_for_env(env_name, key_vault_name)
