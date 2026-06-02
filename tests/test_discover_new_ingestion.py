@@ -3,11 +3,21 @@ from __future__ import annotations
 import csv
 import datetime
 import io
+import logging
+from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch, call
 
 import pandas as pd
 import pytest
 
+from sharepoint_ingest.config import (
+    AppSettings,
+    EmailSettings,
+    KeyVaultSettings,
+    SharePointSettings,
+    SqlSettings,
+)
 from tools.discover_new_ingestion import (
     _MAPPING_CSV_HEADER,
     _MAPPING_FIRST_ROW_COMMENT,
@@ -541,6 +551,168 @@ def test_mapping_csv_system_columns_not_duplicated_when_in_data_columns() -> Non
     assert len(source_file_rows) == 1, "source_file_name should appear exactly once"
     # Confirm Source column is empty (engine-managed, not a key in column_mapping_json)
     assert source_file_rows[0]["Source column"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Regression: discover() must resolve DB names from KV before building SqlClient
+# ---------------------------------------------------------------------------
+
+def _make_sql(database: str = "") -> SqlSettings:
+    return SqlSettings(
+        host="localhost",
+        port=1433,
+        username="",
+        password="",
+        auth_mode="sspi",
+        database=database,
+        odbc_driver="ODBC Driver 18 for SQL Server",
+        trust_server_certificate=True,
+    )
+
+
+def _make_app_settings(*, env_name: str = "dev", aud_db: str = "") -> AppSettings:
+    kv = KeyVaultSettings(
+        vault_name="kv-sp-ingest-dev",
+        vault_url="https://kv-sp-ingest-dev.vault.azure.net/",
+        client_id_secret_name="dm-sharepoint-dev-client-id",
+        client_secret_secret_name="dm-sharepoint-dev-client-secret",
+        tenant_id_secret_name="dm-sharepoint-dev-tenant-id",
+        site_url_secret_name="dm-sharepoint-dev-site-url",
+        sql_server_secret_name="dm-sql-dev-server",
+        sql_int_database_secret_name="dm-sql-dev-int-database",
+        sql_stg_database_secret_name="dm-sql-dev-stg-database",
+        sql_aud_database_secret_name="dm-sql-dev-aud-database",
+        sql_username_secret_name=None,
+        sql_password_secret_name=None,
+    )
+    return AppSettings(
+        env_name=env_name,
+        log_level="INFO",
+        allow_test_data_in_prod=False,
+        default_load_strategy="TRUNCATE",
+        default_file_pattern="*",
+        null_alert_threshold=0.9,
+        enable_chunked_csv=False,
+        enable_chunked_parquet=True,
+        ingest_chunk_size_rows=5000,
+        azure_subscription_id=None,
+        azure_resource_group=None,
+        sql=_make_sql(database=aud_db),
+        sql_stg=_make_sql(),
+        sql_int=_make_sql(),
+        key_vault=kv,
+        sharepoint=SharePointSettings(
+            site_url="https://mycompany.sharepoint.com/sites/data_ingest_dev",
+            admin_url=None,
+        ),
+        email=EmailSettings(
+            enabled=False,
+            host=None,
+            port=587,
+            username=None,
+            password=None,
+            use_tls=True,
+            from_address="test@example.com",
+        ),
+    )
+
+
+def test_discover_resolves_database_before_sql_client_construction() -> None:
+    """discover() must call _resolve_database_names before constructing SqlClient.
+
+    Regression for the bug where load_settings() leaves sql.database="" and the
+    tool attempted to connect with an empty database name, causing a driver error.
+    """
+    resolved_settings = _make_app_settings(aud_db="ingest_audit_dev")
+
+    captured_sql_settings: list = []
+
+    def _fake_sql_client(sql_settings, **kwargs):
+        captured_sql_settings.append(sql_settings)
+        mock = MagicMock()
+        mock.test_connection.return_value = None
+        mock.query_rows.return_value = []
+        return mock
+
+    import tools.discover_new_ingestion as _disc
+
+    with (
+        patch.object(_disc, "load_settings", return_value=_make_app_settings(aud_db="")),
+        patch.object(_disc, "maybe_build_provider", return_value=None),
+        patch.object(
+            _disc,
+            "_resolve_database_names",
+            return_value=resolved_settings,
+        ) as mock_resolve_db,
+        patch.object(
+            _disc,
+            "_resolve_sql_settings",
+            return_value=resolved_settings.sql,
+        ),
+        patch.object(_disc, "SqlClient", side_effect=_fake_sql_client),
+        # _build_sp_client raises before SharePoint is touched — stop early
+        patch.object(_disc, "_build_sp_client", side_effect=SystemExit(0)),
+    ):
+        try:
+            _disc.discover(env="dev")
+        except SystemExit:
+            pass
+
+    # _resolve_database_names must have been called (not skipped)
+    mock_resolve_db.assert_called_once()
+
+    # SqlClient must have been constructed with the *resolved* (non-empty) db name
+    assert captured_sql_settings, "SqlClient was never constructed"
+    assert captured_sql_settings[0].database == "ingest_audit_dev", (
+        f"Expected 'ingest_audit_dev' but got '{captured_sql_settings[0].database}'. "
+        "discover() appears to be building SqlClient before resolving DB names from KV."
+    )
+
+
+def test_discover_passes_resolved_credentials_to_sql_client() -> None:
+    """For credential-based auth modes, _resolve_sql_settings must be called and
+    its result (with injected credentials) must be used to build SqlClient."""
+    base_settings = _make_app_settings(aud_db="")
+    # Simulate load_settings returning settings without a database name (placeholder)
+    cred_sql = replace(
+        base_settings.sql,
+        database="ingest_audit_dev",
+        username="kv_user",
+        password="kv_pass",
+        auth_mode="sql_password",
+    )
+
+    captured_sql_settings: list = []
+
+    def _fake_sql_client(sql_settings, **kwargs):
+        captured_sql_settings.append(sql_settings)
+        mock = MagicMock()
+        mock.test_connection.return_value = None
+        mock.query_rows.return_value = []
+        return mock
+
+    import tools.discover_new_ingestion as _disc
+
+    resolved_settings = replace(base_settings, sql=cred_sql)
+
+    with (
+        patch.object(_disc, "load_settings", return_value=base_settings),
+        patch.object(_disc, "maybe_build_provider", return_value=MagicMock()),
+        patch.object(_disc, "_resolve_database_names", return_value=resolved_settings),
+        patch.object(_disc, "_resolve_sql_settings", return_value=cred_sql),
+        patch.object(_disc, "SqlClient", side_effect=_fake_sql_client),
+        patch.object(_disc, "_build_sp_client", side_effect=SystemExit(0)),
+    ):
+        try:
+            _disc.discover(env="dev")
+        except SystemExit:
+            pass
+
+    assert captured_sql_settings, "SqlClient was never constructed"
+    used = captured_sql_settings[0]
+    assert used.username == "kv_user"
+    assert used.password == "kv_pass"
+    assert used.database == "ingest_audit_dev"
 
 
 

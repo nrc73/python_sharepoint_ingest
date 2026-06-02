@@ -56,6 +56,7 @@ if _REPO_ROOT not in sys.path:
 
 from sharepoint_ingest.config import load_settings
 from sharepoint_ingest.keyvault_client import maybe_build_provider
+from sharepoint_ingest.main import _resolve_database_names, _resolve_sql_settings
 from sharepoint_ingest.sharepoint_client import SharePointClient
 from sharepoint_ingest.sql_client import SqlClient
 
@@ -1158,9 +1159,20 @@ def discover(
     print(f"\n[1/5] Loading settings (env={env or 'auto'}) …")
     settings = load_settings(env_override=env)
     _assert_dev_only(getattr(settings, "env_name", ""))
-    print(f"      SQL:             {settings.sql.host}/{settings.sql.database}")
+
+    # Resolve database names from Key Vault (same pattern as main.py).
+    # load_settings() leaves sql.database blank — it must be injected from KV.
+    import logging as _logging
+    _logger = _logging.getLogger(__name__)
+    provider = maybe_build_provider(settings.key_vault)
+    settings = _resolve_database_names(settings, provider, _logger)
+
+    # Resolve SQL credentials for credential-based auth modes.
+    resolved_sql = _resolve_sql_settings(settings, provider=provider)
+
+    print(f"      SQL:             {resolved_sql.host}/{resolved_sql.database}")
     print(f"      SharePoint site: {settings.sharepoint.site_url}")
-    sql = SqlClient(settings.sql)
+    sql = SqlClient(resolved_sql)
     sql.test_connection()
     print("      SQL connection OK.")
 
