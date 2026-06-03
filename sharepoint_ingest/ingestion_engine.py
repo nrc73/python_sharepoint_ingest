@@ -1079,7 +1079,7 @@ class IngestionEngine:
         if lower_name.endswith(".csv"):
             return read_csv_from_bytes(payload, header_skip_rows=config.header_skip_rows)
         if lower_name.endswith((".xlsx", ".xlsm", ".xls")):
-            return self._parse_excel_payload(config, payload)
+            return self._parse_excel_payload(config, payload, file_name=file_name)
         if lower_name.endswith(".parquet"):
             return read_parquet_from_bytes(payload)
         raise ValueError(f"Unsupported file extension for {file_name}")
@@ -1089,9 +1089,11 @@ class IngestionEngine:
         """Delegate to :func:`~sharepoint_ingest.ingestion._file_parsing.resolve_source_kind`."""
         return resolve_source_kind(file_name)
 
-    def _parse_excel_payload(self, config: IngestionConfig, payload: bytes) -> pd.DataFrame:
+    def _parse_excel_payload(
+        self, config: IngestionConfig, payload: bytes, file_name: str = ""
+    ) -> pd.DataFrame:
         """Delegate to :func:`~sharepoint_ingest.ingestion._excel_utils.parse_excel_payload`."""
-        return parse_excel_payload(config, payload)
+        return parse_excel_payload(config, payload, file_name=file_name)
 
     @staticmethod
     def _attach_excel_tab_name_column(

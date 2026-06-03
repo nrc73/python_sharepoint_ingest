@@ -10,7 +10,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from openpyxl import load_workbook
 
-
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_ROOT = ROOT / "tests" / "sample_artifacts"
 
@@ -142,6 +141,59 @@ def generate_valid_excel_files(valid_excel_dir: Path) -> None:
             # Explicit display formats per worksheet while preserving true Excel date values.
             _apply_signup_date_number_format(writer, "Customers_AU", "d/mm/yyyy;@")
             _apply_signup_date_number_format(writer, "Customers_US", "m/d/yyyy;@")
+
+    generate_valid_legacy_xls_saved_as_xlsx_file(valid_excel_dir)
+
+
+def generate_valid_legacy_xls_saved_as_xlsx_file(valid_excel_dir: Path) -> None:
+    """Create a valid legacy BIFF/OLE2 ``.xls`` workbook saved with a ``.xlsx`` name.
+
+    This deliberately mis-labelled artifact exercises payload-based Excel format
+    detection and the xlrd read path while flowing through a normal ``.xlsx``
+    SharePoint config pattern.
+    """
+    try:
+        import xlwt
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Generating the legacy .xls-as-.xlsx artifact requires xlwt. "
+            "Install dev dependencies with: python -m pip install -e .[dev]"
+        ) from exc
+
+    file_path = valid_excel_dir / "valid_legacy_xls_saved_as_xlsx_001.xlsx"
+    workbook = xlwt.Workbook()
+    worksheet = workbook.add_sheet("Customers_Legacy")
+    date_style = xlwt.easyxf(num_format_str="YYYY-MM-DD")
+    money_style = xlwt.easyxf(num_format_str="0.00")
+
+    headers = [
+        "CustomerId",
+        "CustomerName",
+        "SignupDate",
+        "CreditLimit",
+        "IsActive",
+        "RegionCode",
+        "SourceSystem",
+    ]
+    rows = [
+        ["CUST90001", "Legacy XLS Customer 1", datetime(2025, 2, 1), 2500.00, "Y", "AU", "LEGACY_XLS"],
+        ["CUST90002", "Legacy XLS Customer 2", datetime(2025, 2, 2), 3750.50, "Y", "US", "LEGACY_XLS"],
+        ["CUST90003", "Legacy XLS Customer 3", datetime(2025, 2, 3), 1800.25, "N", "NZ", "LEGACY_XLS"],
+    ]
+
+    for col_idx, header in enumerate(headers):
+        worksheet.write(0, col_idx, header)
+
+    for row_idx, row in enumerate(rows, start=1):
+        for col_idx, value in enumerate(row):
+            if headers[col_idx] == "SignupDate":
+                worksheet.write(row_idx, col_idx, value, date_style)
+            elif headers[col_idx] == "CreditLimit":
+                worksheet.write(row_idx, col_idx, value, money_style)
+            else:
+                worksheet.write(row_idx, col_idx, value)
+
+    workbook.save(str(file_path))
 
 
 def generate_valid_csv_files(valid_csv_dir: Path) -> None:

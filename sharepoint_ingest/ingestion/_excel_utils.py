@@ -40,9 +40,17 @@ def attach_excel_tab_name_column(
     return enriched
 
 
-def parse_excel_payload(config: IngestionConfig, payload: bytes) -> pd.DataFrame:
+def parse_excel_payload(
+    config: IngestionConfig,
+    payload: bytes,
+    file_name: str = "",
+) -> pd.DataFrame:
     """Parse *payload* as an Excel workbook according to the tab selection
     rules in *config*.
+
+    *file_name* is forwarded to the underlying Excel readers so that a warning
+    is logged when a ``.xlsx``-named file is actually a legacy OLE2/BIFF
+    ``.xls`` workbook.
 
     Supports:
     * blank / unset → first sheet
@@ -54,12 +62,17 @@ def parse_excel_payload(config: IngestionConfig, payload: bytes) -> pd.DataFrame
 
     if not tab_name:
         return read_excel_from_bytes(
-            payload, sheet_name=None, header_skip_rows=config.header_skip_rows
+            payload,
+            sheet_name=None,
+            header_skip_rows=config.header_skip_rows,
+            file_name=file_name,
         )
 
     if tab_name.upper() in {"*", "ALL", "ALL_SHEETS"}:
         all_sheets = read_all_excel_sheets_from_bytes(
-            payload, header_skip_rows=config.header_skip_rows
+            payload,
+            header_skip_rows=config.header_skip_rows,
+            file_name=file_name,
         )
         if not all_sheets:
             return pd.DataFrame()
@@ -73,7 +86,9 @@ def parse_excel_payload(config: IngestionConfig, payload: bytes) -> pd.DataFrame
         pattern = tab_name.split(":", 1)[1].strip()
         regex = re.compile(pattern)
         all_sheets = read_all_excel_sheets_from_bytes(
-            payload, header_skip_rows=config.header_skip_rows
+            payload,
+            header_skip_rows=config.header_skip_rows,
+            file_name=file_name,
         )
         matched = [
             attach_excel_tab_name_column(df, name)
@@ -85,5 +100,8 @@ def parse_excel_payload(config: IngestionConfig, payload: bytes) -> pd.DataFrame
         return pd.concat(matched, ignore_index=True)
 
     return read_excel_from_bytes(
-        payload, sheet_name=tab_name, header_skip_rows=config.header_skip_rows
+        payload,
+        sheet_name=tab_name,
+        header_skip_rows=config.header_skip_rows,
+        file_name=file_name,
     )

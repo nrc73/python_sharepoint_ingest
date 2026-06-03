@@ -4,6 +4,7 @@ msal>=1.29.0
 requests>=2.32.3
 pandas>=2.2.2
 openpyxl>=3.1.2
+xlrd>=2.0.1
 pyarrow>=15.0.0
 python-dotenv>=1.0.1
 SQLAlchemy>=2.0.31

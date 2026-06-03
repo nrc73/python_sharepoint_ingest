@@ -292,7 +292,7 @@ def _read_file_sheets(file_bytes: bytes, file_name: str) -> dict[str, pd.DataFra
             return {"default": read_parquet_from_bytes(BytesIO(file_bytes))}
         if any(lower.endswith(e) for e in (".xlsx", ".xls", ".xlsm")):
             from sharepoint_ingest.file_processors import read_all_excel_sheets_from_bytes
-            return read_all_excel_sheets_from_bytes(file_bytes)
+            return read_all_excel_sheets_from_bytes(file_bytes, file_name=file_name)
         print(f"    [SKIP] Unsupported file type: {file_name}")
         return {}
     except Exception as exc:

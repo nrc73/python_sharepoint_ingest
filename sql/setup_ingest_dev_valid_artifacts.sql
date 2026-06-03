@@ -36,8 +36,8 @@ BEGIN
         is_active VARCHAR(1) NULL,
         region_code VARCHAR(10) NULL,
         source_system VARCHAR(50) NULL,
-        excel_tab_name VARCHAR(100) NOT NULL,
         source_file_name VARCHAR(255) NULL,
+        excel_tab_name VARCHAR(100) NOT NULL,
         sp_ingest_load_dt DATETIME NOT NULL DEFAULT GETUTCDATE(),
         audit_id BIGINT NULL,
         [__$batch_id] INT NULL,
@@ -87,6 +87,51 @@ GO
 IF COL_LENGTH('sharepoint.dest_customers', 'source_file_name') IS NULL
 BEGIN
     ALTER TABLE sharepoint.dest_customers ADD source_file_name VARCHAR(255) NULL;
+END
+GO
+
+IF OBJECT_ID('sharepoint.dest_legacy_xls_as_xlsx', 'U') IS NULL
+BEGIN
+    CREATE TABLE sharepoint.dest_legacy_xls_as_xlsx (
+        customer_id VARCHAR(20) NOT NULL,
+        customer_name VARCHAR(200) NULL,
+        signup_date DATE NULL,
+        credit_limit DECIMAL(18,2) NULL,
+        is_active VARCHAR(1) NULL,
+        region_code VARCHAR(10) NULL,
+        source_system VARCHAR(50) NULL,
+        source_file_name VARCHAR(255) NULL,
+        excel_tab_name VARCHAR(100) NOT NULL,
+        sp_ingest_load_dt DATETIME NOT NULL DEFAULT GETUTCDATE(),
+        audit_id BIGINT NULL,
+        [__$batch_id] INT NULL,
+        [__$job_instance_id] INT NULL,
+        CONSTRAINT PK_dest_legacy_xls_as_xlsx PRIMARY KEY (customer_id, excel_tab_name)
+    );
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_legacy_xls_as_xlsx', 'source_file_name') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_legacy_xls_as_xlsx ADD source_file_name VARCHAR(255) NULL;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_legacy_xls_as_xlsx', 'audit_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_legacy_xls_as_xlsx ADD audit_id BIGINT NULL;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_legacy_xls_as_xlsx', '__$batch_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_legacy_xls_as_xlsx ADD [__$batch_id] INT NULL;
+END
+GO
+
+IF COL_LENGTH('sharepoint.dest_legacy_xls_as_xlsx', '__$job_instance_id') IS NULL
+BEGIN
+    ALTER TABLE sharepoint.dest_legacy_xls_as_xlsx ADD [__$job_instance_id] INT NULL;
 END
 GO
 
@@ -493,6 +538,81 @@ WHEN NOT MATCHED THEN
 GO
 
 MERGE config.sharepoint_ingestion AS target
+USING (SELECT 'wf-valid-legacy-xls-as-xlsx' AS workflow_id) AS source
+ON target.workflow_id = source.workflow_id
+WHEN MATCHED THEN
+    UPDATE SET
+        sharepoint_base_url = '{env:sharepoint_site_url}',
+        sharepoint_process_folder = '/Documents/valid_legacy_xls_as_xlsx',
+        excel_tab_name = 'Customers_Legacy',
+        sharepoint_process_archive_folder = '/Documents/valid_legacy_xls_as_xlsx/Processed',
+        sharepoint_process_failed_folder = '/Documents/valid_legacy_xls_as_xlsx/Failed',
+        process_frequency = 'OnDemand',
+        header_skip_rows = 0,
+        check_source_dest_columns = '1',
+        multi_file_ingest = '1',
+        error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
+        process_id = COALESCE(target.process_id, NEWID()),
+        staging_table_name = 'sharepoint.dest_legacy_xls_as_xlsx',
+        is_active = '1',
+        ingestion_scope = 'TEST',
+        ingestion_domain = 'sample_artifacts',
+        is_test_data = 1,
+        file_name_pattern = 'valid_legacy_xls_saved_as_xlsx_*.xlsx',
+        load_strategy = 'APPEND',
+        merge_key_columns = 'customer_id,excel_tab_name',
+        column_mapping_json = '{"CustomerId":"customer_id","CustomerName":"customer_name","SignupDate":"signup_date","CreditLimit":"credit_limit","IsActive":"is_active","RegionCode":"region_code","SourceSystem":"source_system"}',
+        sp_ingest_modified_utc = SYSUTCDATETIME()
+WHEN NOT MATCHED THEN
+    INSERT (
+        sharepoint_base_url,
+        sharepoint_process_folder,
+        excel_tab_name,
+        sharepoint_process_archive_folder,
+        sharepoint_process_failed_folder,
+        process_frequency,
+        header_skip_rows,
+        check_source_dest_columns,
+        multi_file_ingest,
+        error_notification_email_address,
+        process_id,
+        workflow_id,
+        staging_table_name,
+        is_active,
+        ingestion_scope,
+        ingestion_domain,
+        is_test_data,
+        file_name_pattern,
+        load_strategy,
+        merge_key_columns,
+        column_mapping_json
+    )
+    VALUES (
+        '{env:sharepoint_site_url}',
+        '/Documents/valid_legacy_xls_as_xlsx',
+        'Customers_Legacy',
+        '/Documents/valid_legacy_xls_as_xlsx/Processed',
+        '/Documents/valid_legacy_xls_as_xlsx/Failed',
+        'OnDemand',
+        0,
+        '1',
+        '1',
+        'NathanChapman@company715.onmicrosoft.com',
+        NEWID(),
+        'wf-valid-legacy-xls-as-xlsx',
+        'sharepoint.dest_legacy_xls_as_xlsx',
+        '1',
+        'TEST',
+        'sample_artifacts',
+        1,
+        'valid_legacy_xls_saved_as_xlsx_*.xlsx',
+        'APPEND',
+        'customer_id,excel_tab_name',
+        '{"CustomerId":"customer_id","CustomerName":"customer_name","SignupDate":"signup_date","CreditLimit":"credit_limit","IsActive":"is_active","RegionCode":"region_code","SourceSystem":"source_system"}'
+    );
+GO
+
+MERGE config.sharepoint_ingestion AS target
 USING (SELECT 'wf-valid-transactions-standard' AS workflow_id) AS source
 ON target.workflow_id = source.workflow_id
 WHEN MATCHED THEN
@@ -726,10 +846,3 @@ SET
     sp_ingest_modified_utc = SYSUTCDATETIME()
 WHERE workflow_id LIKE 'wf-valid-%';
 GO
-
-
-
-
-
-
-
