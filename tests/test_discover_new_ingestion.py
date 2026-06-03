@@ -31,11 +31,13 @@ from tools.discover_new_ingestion import (
     _generate_config_insert,
     _generate_mapping_csv_rows,
     _list_folders_to_depth,
+    _read_file_sheets,
     _safe_suffix_from_file_name,
     _same_filename_family,
     _snake_case_identifier_fragment,
     _system_col_type_with_nullability,
 )
+import sharepoint_ingest.file_processors.excel_processor as excel_processor
 
 
 def _candidate(file_name: str, *, cols: tuple[str, ...], kind: str = "excel") -> _ProfileCandidate:
@@ -92,6 +94,43 @@ def test_build_groups_splits_different_layouts() -> None:
 
     assert len(groups) == 2
     assert all(g.multi_file_ingest == 0 for g in groups)
+
+
+def test_read_file_sheets_skips_encrypted_excel_with_specific_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = excel_processor._OLE2_MAGIC + b"encrypted-placeholder"
+    monkeypatch.setattr(
+        excel_processor,
+        "_ole2_stream_names",
+        lambda _payload: {"encryptioninfo", "encryptedpackage"},
+    )
+
+    result = _read_file_sheets(payload, "protected.xlsx")
+
+    assert result == {}
+    output = capsys.readouterr().out
+    assert "Skipping encrypted Excel file 'protected.xlsx'" in output
+
+
+def test_read_file_sheets_skips_invalid_ole2_excel_with_specific_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = excel_processor._OLE2_MAGIC + b"invalid-placeholder"
+    monkeypatch.setattr(
+        excel_processor,
+        "_ole2_stream_names",
+        lambda _payload: {"worddocument"},
+    )
+
+    result = _read_file_sheets(payload, "bad.xlsx")
+
+    assert result == {}
+    output = capsys.readouterr().out
+    assert "Skipping unreadable Excel file 'bad.xlsx'" in output
+    assert "no BIFF Workbook/Book stream" in output
 
 
 @pytest.mark.parametrize("env_name", ["test", "prod", "", "DEVX"])
@@ -713,6 +752,7 @@ def test_discover_passes_resolved_credentials_to_sql_client() -> None:
     assert used.username == "kv_user"
     assert used.password == "kv_pass"
     assert used.database == "ingest_audit_dev"
+
 
 
 

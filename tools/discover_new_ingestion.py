@@ -296,6 +296,24 @@ def _read_file_sheets(file_bytes: bytes, file_name: str) -> dict[str, pd.DataFra
         print(f"    [SKIP] Unsupported file type: {file_name}")
         return {}
     except Exception as exc:
+        try:
+            from sharepoint_ingest.file_processors import (
+                EncryptedExcelPayloadError,
+                ExcelPayloadError,
+                InvalidExcelPayloadError,
+            )
+        except Exception:  # pragma: no cover - defensive import fallback
+            EncryptedExcelPayloadError = InvalidExcelPayloadError = ExcelPayloadError = ()  # type: ignore[assignment]
+
+        if isinstance(exc, EncryptedExcelPayloadError):
+            print(f"    [WARN] Skipping encrypted Excel file '{file_name}': {exc}")
+            return {}
+        if isinstance(exc, InvalidExcelPayloadError):
+            print(f"    [WARN] Skipping unreadable Excel file '{file_name}': {exc}")
+            return {}
+        if isinstance(exc, ExcelPayloadError):
+            print(f"    [WARN] Skipping Excel file '{file_name}': {exc}")
+            return {}
         print(f"    [WARN] Could not read '{file_name}': {exc}")
         return {}
 
@@ -1397,6 +1415,7 @@ if __name__ == "__main__":
         no_profile=args.no_profile,
         padding=args.padding,
     )
+
 
 
 

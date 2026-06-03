@@ -90,9 +90,9 @@ BEGIN
 END
 GO
 
-IF OBJECT_ID('sharepoint.dest_legacy_xls_as_xlsx', 'U') IS NULL
+IF OBJECT_ID('sharepoint.dest_ole2_customers', 'U') IS NULL
 BEGIN
-    CREATE TABLE sharepoint.dest_legacy_xls_as_xlsx (
+    CREATE TABLE sharepoint.dest_ole2_customers (
         customer_id VARCHAR(20) NOT NULL,
         customer_name VARCHAR(200) NULL,
         signup_date DATE NULL,
@@ -106,32 +106,32 @@ BEGIN
         audit_id BIGINT NULL,
         [__$batch_id] INT NULL,
         [__$job_instance_id] INT NULL,
-        CONSTRAINT PK_dest_legacy_xls_as_xlsx PRIMARY KEY (customer_id, excel_tab_name)
+        CONSTRAINT PK_dest_ole2_customers PRIMARY KEY (customer_id, excel_tab_name)
     );
 END
 GO
 
-IF COL_LENGTH('sharepoint.dest_legacy_xls_as_xlsx', 'source_file_name') IS NULL
+IF COL_LENGTH('sharepoint.dest_ole2_customers', 'source_file_name') IS NULL
 BEGIN
-    ALTER TABLE sharepoint.dest_legacy_xls_as_xlsx ADD source_file_name VARCHAR(255) NULL;
+    ALTER TABLE sharepoint.dest_ole2_customers ADD source_file_name VARCHAR(255) NULL;
 END
 GO
 
-IF COL_LENGTH('sharepoint.dest_legacy_xls_as_xlsx', 'audit_id') IS NULL
+IF COL_LENGTH('sharepoint.dest_ole2_customers', 'audit_id') IS NULL
 BEGIN
-    ALTER TABLE sharepoint.dest_legacy_xls_as_xlsx ADD audit_id BIGINT NULL;
+    ALTER TABLE sharepoint.dest_ole2_customers ADD audit_id BIGINT NULL;
 END
 GO
 
-IF COL_LENGTH('sharepoint.dest_legacy_xls_as_xlsx', '__$batch_id') IS NULL
+IF COL_LENGTH('sharepoint.dest_ole2_customers', '__$batch_id') IS NULL
 BEGIN
-    ALTER TABLE sharepoint.dest_legacy_xls_as_xlsx ADD [__$batch_id] INT NULL;
+    ALTER TABLE sharepoint.dest_ole2_customers ADD [__$batch_id] INT NULL;
 END
 GO
 
-IF COL_LENGTH('sharepoint.dest_legacy_xls_as_xlsx', '__$job_instance_id') IS NULL
+IF COL_LENGTH('sharepoint.dest_ole2_customers', '__$job_instance_id') IS NULL
 BEGIN
-    ALTER TABLE sharepoint.dest_legacy_xls_as_xlsx ADD [__$job_instance_id] INT NULL;
+    ALTER TABLE sharepoint.dest_ole2_customers ADD [__$job_instance_id] INT NULL;
 END
 GO
 
@@ -538,27 +538,27 @@ WHEN NOT MATCHED THEN
 GO
 
 MERGE config.sharepoint_ingestion AS target
-USING (SELECT 'wf-valid-legacy-xls-as-xlsx' AS workflow_id) AS source
+USING (SELECT 'wf-valid-ole2-excel' AS workflow_id) AS source
 ON target.workflow_id = source.workflow_id
 WHEN MATCHED THEN
     UPDATE SET
         sharepoint_base_url = '{env:sharepoint_site_url}',
-        sharepoint_process_folder = '/Documents/valid_legacy_xls_as_xlsx',
-        excel_tab_name = 'Customers_Legacy',
-        sharepoint_process_archive_folder = '/Documents/valid_legacy_xls_as_xlsx/Processed',
-        sharepoint_process_failed_folder = '/Documents/valid_legacy_xls_as_xlsx/Failed',
+        sharepoint_process_folder = '/Documents/valid_ole2_excel',
+        excel_tab_name = 'Customers_OLE2',
+        sharepoint_process_archive_folder = '/Documents/valid_ole2_excel/Processed',
+        sharepoint_process_failed_folder = '/Documents/valid_ole2_excel/Failed',
         process_frequency = 'OnDemand',
         header_skip_rows = 0,
         check_source_dest_columns = '1',
         multi_file_ingest = '1',
         error_notification_email_address = 'NathanChapman@company715.onmicrosoft.com',
         process_id = COALESCE(target.process_id, NEWID()),
-        staging_table_name = 'sharepoint.dest_legacy_xls_as_xlsx',
+        staging_table_name = 'sharepoint.dest_ole2_customers',
         is_active = '1',
         ingestion_scope = 'TEST',
         ingestion_domain = 'sample_artifacts',
         is_test_data = 1,
-        file_name_pattern = 'valid_legacy_xls_saved_as_xlsx_*.xlsx',
+        file_name_pattern = 'valid_ole2_customers_*.xls',
         load_strategy = 'APPEND',
         merge_key_columns = 'customer_id,excel_tab_name',
         column_mapping_json = '{"CustomerId":"customer_id","CustomerName":"customer_name","SignupDate":"signup_date","CreditLimit":"credit_limit","IsActive":"is_active","RegionCode":"region_code","SourceSystem":"source_system"}',
@@ -589,23 +589,23 @@ WHEN NOT MATCHED THEN
     )
     VALUES (
         '{env:sharepoint_site_url}',
-        '/Documents/valid_legacy_xls_as_xlsx',
-        'Customers_Legacy',
-        '/Documents/valid_legacy_xls_as_xlsx/Processed',
-        '/Documents/valid_legacy_xls_as_xlsx/Failed',
+        '/Documents/valid_ole2_excel',
+        'Customers_OLE2',
+        '/Documents/valid_ole2_excel/Processed',
+        '/Documents/valid_ole2_excel/Failed',
         'OnDemand',
         0,
         '1',
         '1',
         'NathanChapman@company715.onmicrosoft.com',
         NEWID(),
-        'wf-valid-legacy-xls-as-xlsx',
-        'sharepoint.dest_legacy_xls_as_xlsx',
+        'wf-valid-ole2-excel',
+        'sharepoint.dest_ole2_customers',
         '1',
         'TEST',
         'sample_artifacts',
         1,
-        'valid_legacy_xls_saved_as_xlsx_*.xlsx',
+        'valid_ole2_customers_*.xls',
         'APPEND',
         'customer_id,excel_tab_name',
         '{"CustomerId":"customer_id","CustomerName":"customer_name","SignupDate":"signup_date","CreditLimit":"credit_limit","IsActive":"is_active","RegionCode":"region_code","SourceSystem":"source_system"}'

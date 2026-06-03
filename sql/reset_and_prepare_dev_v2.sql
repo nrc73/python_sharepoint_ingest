@@ -82,7 +82,7 @@ VALUES (
 );
 GO
 
--- ── wf-valid-legacy-xls-as-xlsx ──────────────────────────────────────────────
+-- ── wf-valid-ole2-excel ──────────────────────────────────────────────
 INSERT INTO config.sharepoint_ingestion (
     sharepoint_base_url,
     sharepoint_process_folder,
@@ -109,10 +109,10 @@ INSERT INTO config.sharepoint_ingestion (
 )
 VALUES (
     'https://mycompany715.sharepoint.com/sites/data_ingest_dev',
-    '/Documents/valid_legacy_xls_as_xlsx',
-    'Customers_Legacy',
-    '/Documents/valid_legacy_xls_as_xlsx/Processed',
-    '/Documents/valid_legacy_xls_as_xlsx/Failed',
+    '/Documents/valid_ole2_excel',
+    'Customers_OLE2',
+    '/Documents/valid_ole2_excel/Processed',
+    '/Documents/valid_ole2_excel/Failed',
     'OnDemand',
     0,
     '1',
@@ -120,13 +120,13 @@ VALUES (
     'NathanChapman@company715.onmicrosoft.com',
     NULL,
     NEWID(),
-    'wf-valid-legacy-xls-as-xlsx',
-    'sharepoint.dest_legacy_xls_as_xlsx',
-    'sharepoint.dest_legacy_xls_as_xlsx',
+    'wf-valid-ole2-excel',
+    'sharepoint.dest_ole2_customers',
+    'sharepoint.dest_ole2_customers',
     '1',
     'TEST',
     1,
-    'valid_legacy_xls_saved_as_xlsx_*.xlsx',
+    'valid_ole2_customers_*.xls',
     'APPEND',
     'customer_id,excel_tab_name',
     '{"CustomerId":"customer_id","CustomerName":"customer_name","SignupDate":"signup_date","CreditLimit":"credit_limit","IsActive":"is_active","RegionCode":"region_code","SourceSystem":"source_system"}'
@@ -518,7 +518,7 @@ GO
 
 IF OBJECT_ID('sharepoint.dest_customers', 'U') IS NOT NULL DROP TABLE sharepoint.dest_customers;
 GO
-IF OBJECT_ID('sharepoint.dest_legacy_xls_as_xlsx', 'U') IS NOT NULL DROP TABLE sharepoint.dest_legacy_xls_as_xlsx;
+IF OBJECT_ID('sharepoint.dest_ole2_customers', 'U') IS NOT NULL DROP TABLE sharepoint.dest_ole2_customers;
 GO
 IF OBJECT_ID('sharepoint.dest_transactions', 'U') IS NOT NULL DROP TABLE sharepoint.dest_transactions;
 GO
@@ -552,8 +552,8 @@ CREATE TABLE sharepoint.dest_customers (
 );
 GO
 
--- ── sharepoint.dest_legacy_xls_as_xlsx ───────────────────────────────────────
-CREATE TABLE sharepoint.dest_legacy_xls_as_xlsx (
+-- ── sharepoint.dest_ole2_customers ───────────────────────────────────────
+CREATE TABLE sharepoint.dest_ole2_customers (
     customer_id          VARCHAR(20)    NOT NULL,
     customer_name        VARCHAR(200)   NULL,
     signup_date          DATE           NULL,
@@ -567,7 +567,7 @@ CREATE TABLE sharepoint.dest_legacy_xls_as_xlsx (
     audit_id             BIGINT         NULL,
     [__$batch_id]        INT            NULL,
     [__$job_instance_id] INT            NULL,
-    CONSTRAINT PK_stg_dev_dest_legacy_xls_as_xlsx PRIMARY KEY (customer_id, excel_tab_name)
+    CONSTRAINT PK_stg_dev_dest_ole2_customers PRIMARY KEY (customer_id, excel_tab_name)
 );
 GO
 
@@ -720,7 +720,7 @@ GO
 
 IF OBJECT_ID('sharepoint.dest_customers', 'U') IS NOT NULL DROP TABLE sharepoint.dest_customers;
 GO
-IF OBJECT_ID('sharepoint.dest_legacy_xls_as_xlsx', 'U') IS NOT NULL DROP TABLE sharepoint.dest_legacy_xls_as_xlsx;
+IF OBJECT_ID('sharepoint.dest_ole2_customers', 'U') IS NOT NULL DROP TABLE sharepoint.dest_ole2_customers;
 GO
 IF OBJECT_ID('sharepoint.dest_transactions', 'U') IS NOT NULL DROP TABLE sharepoint.dest_transactions;
 GO
@@ -753,7 +753,7 @@ CREATE TABLE sharepoint.dest_customers (
 );
 GO
 
-CREATE TABLE sharepoint.dest_legacy_xls_as_xlsx (
+CREATE TABLE sharepoint.dest_ole2_customers (
     customer_id          VARCHAR(20)    NOT NULL,
     customer_name        VARCHAR(200)   NULL,
     signup_date          DATE           NULL,
@@ -767,7 +767,7 @@ CREATE TABLE sharepoint.dest_legacy_xls_as_xlsx (
     audit_id             BIGINT         NULL,
     [__$batch_id]        INT            NULL,
     [__$job_instance_id] INT            NULL,
-    CONSTRAINT PK_int_dev_dest_legacy_xls_as_xlsx PRIMARY KEY (customer_id, excel_tab_name)
+    CONSTRAINT PK_int_dev_dest_ole2_customers PRIMARY KEY (customer_id, excel_tab_name)
 );
 GO
 

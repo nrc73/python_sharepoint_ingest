@@ -142,27 +142,32 @@ def generate_valid_excel_files(valid_excel_dir: Path) -> None:
             _apply_signup_date_number_format(writer, "Customers_AU", "d/mm/yyyy;@")
             _apply_signup_date_number_format(writer, "Customers_US", "m/d/yyyy;@")
 
-    generate_valid_legacy_xls_saved_as_xlsx_file(valid_excel_dir)
+    generate_valid_ole2_excel_file(valid_excel_dir)
 
 
-def generate_valid_legacy_xls_saved_as_xlsx_file(valid_excel_dir: Path) -> None:
-    """Create a valid legacy BIFF/OLE2 ``.xls`` workbook saved with a ``.xlsx`` name.
+def generate_valid_ole2_excel_file(valid_excel_dir: Path) -> None:
+    """Create a valid legacy BIFF/OLE2 Excel workbook with an honest ``.xls`` extension.
 
-    This deliberately mis-labelled artifact exercises payload-based Excel format
-    detection and the xlrd read path while flowing through a normal ``.xlsx``
-    SharePoint config pattern.
+    This artifact exercises the OLE2/xlrd read path without disguising the file
+    as OOXML.  Mis-labelled OLE2 ``.xlsx`` files are still covered by unit tests
+    because production can receive them, but the dev sample workflow now uses a
+    truthful legacy Excel extension.
     """
     try:
         import xlwt
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "Generating the legacy .xls-as-.xlsx artifact requires xlwt. "
+            "Generating the OLE2 .xls artifact requires xlwt. "
             "Install dev dependencies with: python -m pip install -e .[dev]"
         ) from exc
 
-    file_path = valid_excel_dir / "valid_legacy_xls_saved_as_xlsx_001.xlsx"
+    legacy_mislabelled_path = valid_excel_dir / "valid_legacy_xls_saved_as_xlsx_001.xlsx"
+    if legacy_mislabelled_path.exists():
+        legacy_mislabelled_path.unlink()
+
+    file_path = valid_excel_dir / "valid_ole2_customers_001.xls"
     workbook = xlwt.Workbook()
-    worksheet = workbook.add_sheet("Customers_Legacy")
+    worksheet = workbook.add_sheet("Customers_OLE2")
     date_style = xlwt.easyxf(num_format_str="YYYY-MM-DD")
     money_style = xlwt.easyxf(num_format_str="0.00")
 
@@ -176,9 +181,9 @@ def generate_valid_legacy_xls_saved_as_xlsx_file(valid_excel_dir: Path) -> None:
         "SourceSystem",
     ]
     rows = [
-        ["CUST90001", "Legacy XLS Customer 1", datetime(2025, 2, 1), 2500.00, "Y", "AU", "LEGACY_XLS"],
-        ["CUST90002", "Legacy XLS Customer 2", datetime(2025, 2, 2), 3750.50, "Y", "US", "LEGACY_XLS"],
-        ["CUST90003", "Legacy XLS Customer 3", datetime(2025, 2, 3), 1800.25, "N", "NZ", "LEGACY_XLS"],
+        ["CUST90001", "OLE2 Customer 1", datetime(2025, 2, 1), 2500.00, "Y", "AU", "OLE2_XLS"],
+        ["CUST90002", "OLE2 Customer 2", datetime(2025, 2, 2), 3750.50, "Y", "US", "OLE2_XLS"],
+        ["CUST90003", "OLE2 Customer 3", datetime(2025, 2, 3), 1800.25, "N", "NZ", "OLE2_XLS"],
     ]
 
     for col_idx, header in enumerate(headers):

@@ -10,6 +10,7 @@ This script:
 from __future__ import annotations
 
 import fnmatch
+import logging
 import os
 import re
 import sys
@@ -24,6 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from sharepoint_ingest.config import load_settings
 from sharepoint_ingest.keyvault_client import maybe_build_provider
+from sharepoint_ingest.main import _resolve_database_names, _resolve_sql_settings
 from sharepoint_ingest.sharepoint_client import SharePointClient, _GRAPH_BASE
 from sharepoint_ingest.sql_client import SqlClient
 
@@ -125,20 +127,17 @@ def _artifact_candidates() -> list[Path]:
 def main() -> int:
     env_name = "dev"
     settings = load_settings(env_override=env_name)
+    provider = maybe_build_provider(settings.key_vault)
     client_id, client_secret, tenant_id = _resolve_sharepoint_credentials(env_name)
 
-    # Resolve SharePoint site URL from Key Vault (mirrors main.py logic)
-    provider_for_url = None
-    try:
-        from sharepoint_ingest.keyvault_client import maybe_build_provider as _mbp
-        provider_for_url = _mbp(settings.key_vault)
-    except Exception:
-        pass
+    settings = _resolve_database_names(settings, provider, logging.getLogger(__name__))
+    resolved_sql = _resolve_sql_settings(settings, provider=provider)
 
+    # Resolve SharePoint site URL from Key Vault (mirrors main.py logic)
     site_url = settings.sharepoint.site_url
-    if not site_url and provider_for_url and settings.key_vault.site_url_secret_name:
+    if not site_url and provider and settings.key_vault.site_url_secret_name:
         try:
-            site_url = provider_for_url.get_secret(settings.key_vault.site_url_secret_name)
+            site_url = provider.get_secret(settings.key_vault.site_url_secret_name)
             print(f"Resolved SharePoint site URL from Key Vault: {site_url}")
         except Exception as exc:
             print(f"Warning: could not fetch site URL from Key Vault: {exc}")
@@ -150,7 +149,7 @@ def main() -> int:
         )
 
     sp = SharePointClient(site_url, client_id, client_secret, tenant_id)
-    sql_client = SqlClient(settings.sql)
+    sql_client = SqlClient(resolved_sql)
 
     configs = sql_client.fetch_ingestion_configs(ingestion_scope="test", active_only=True)
     if not configs:

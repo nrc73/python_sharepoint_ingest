@@ -1,7 +1,15 @@
 """File parsers for SharePoint ingestion payloads."""
 
 from .csv_processor import iter_csv_chunks_from_buffer, read_csv_from_bytes
-from .excel_processor import detect_excel_payload_format, read_all_excel_sheets_from_bytes, read_excel_from_bytes
+from .excel_processor import (
+    EncryptedExcelPayloadError,
+    ExcelPayloadError,
+    InvalidExcelPayloadError,
+    classify_excel_payload_format,
+    detect_excel_payload_format,
+    read_all_excel_sheets_from_bytes,
+    read_excel_from_bytes,
+)
 from .parquet_processor import (
     SharePointRangeReader,
     iter_parquet_chunks_from_buffer,
@@ -13,7 +21,11 @@ from .parquet_processor import (
 __all__ = [
     "read_csv_from_bytes",
     "iter_csv_chunks_from_buffer",
+    "ExcelPayloadError",
+    "InvalidExcelPayloadError",
+    "EncryptedExcelPayloadError",
     "detect_excel_payload_format",
+    "classify_excel_payload_format",
     "read_excel_from_bytes",
     "read_all_excel_sheets_from_bytes",
     "read_parquet_from_bytes",

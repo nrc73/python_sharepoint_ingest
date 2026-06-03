@@ -9,10 +9,14 @@ import xlwt
 
 from sharepoint_ingest.file_processors.csv_processor import iter_csv_chunks_from_buffer, read_csv_from_bytes
 from sharepoint_ingest.file_processors.excel_processor import (
+    EncryptedExcelPayloadError,
+    InvalidExcelPayloadError,
+    classify_excel_payload_format,
     detect_excel_payload_format,
     read_all_excel_sheets_from_bytes,
     read_excel_from_bytes,
 )
+import sharepoint_ingest.file_processors.excel_processor as excel_processor
 from sharepoint_ingest.file_processors.parquet_processor import iter_parquet_chunks_from_buffer, read_parquet_from_bytes
 
 # ---------------------------------------------------------------------------
@@ -160,6 +164,12 @@ class TestDetectExcelPayloadFormat:
         # The detection is payload-based — the file name is not consulted here.
         assert detect_excel_payload_format(payload) == "xls"
 
+    def test_classify_html_payload(self) -> None:
+        assert classify_excel_payload_format(b"  <html><body>login</body></html>") == "html_or_xml"
+
+    def test_classify_empty_payload(self) -> None:
+        assert classify_excel_payload_format(b"") == "empty"
+
 
 class TestReadExcelFromBytesLegacyXls:
     """Integration tests: read_excel_from_bytes handles true .xls and disguised .xlsx files."""
@@ -212,6 +222,36 @@ class TestReadExcelFromBytesLegacyXls:
 
         assert len(df) > 0
         assert len(caplog.records) == 0
+
+    def test_encrypted_ole2_payload_raises_clear_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Encrypted OOXML workbooks are OLE2 containers but are not readable by xlrd."""
+        payload = excel_processor._OLE2_MAGIC + b"encrypted-placeholder"
+        monkeypatch.setattr(
+            excel_processor,
+            "_ole2_stream_names",
+            lambda _payload: {"encryptioninfo", "encryptedpackage"},
+        )
+
+        with pytest.raises(EncryptedExcelPayloadError, match="Encrypted Excel payload"):
+            read_excel_from_bytes(payload, file_name="protected.xlsx")
+
+    def test_invalid_ole2_payload_without_workbook_stream_raises_clear_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        payload = excel_processor._OLE2_MAGIC + b"not-a-workbook"
+        monkeypatch.setattr(
+            excel_processor,
+            "_ole2_stream_names",
+            lambda _payload: {"worddocument"},
+        )
+
+        with pytest.raises(InvalidExcelPayloadError, match="no BIFF Workbook/Book stream"):
+            read_excel_from_bytes(payload, file_name="not_excel.xlsx")
+
+    def test_plain_text_payload_named_xlsx_raises_clear_error(self) -> None:
+        with pytest.raises(InvalidExcelPayloadError, match="plain text"):
+            read_excel_from_bytes(b"a,b\n1,2\n", file_name="export.xlsx")
 
 
 class TestReadAllExcelSheetsLegacyXls:
