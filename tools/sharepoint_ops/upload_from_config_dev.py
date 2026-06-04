@@ -30,6 +30,15 @@ from sharepoint_ingest.sharepoint_client import SharePointClient, _GRAPH_BASE
 from sharepoint_ingest.sql_client import SqlClient
 
 
+# Retired live E2E folders that previously held OLE2 / legacy .xls artifacts.
+# They are deliberately removed during every DEV reset/upload so stale files or
+# folders cannot be picked up by manual testing or future broad SharePoint scans.
+RETIRED_E2E_FOLDERS = (
+    "/Documents/valid_legacy_xls_as_xlsx",
+    "/Documents/valid_ole2_excel",
+)
+
+
 def _resolve_sharepoint_credentials(env_name: str) -> tuple[str, str, str]:
     settings = load_settings(env_override=env_name)
     provider = maybe_build_provider(settings.key_vault)
@@ -68,6 +77,28 @@ def _delete_file(sp: SharePointClient, file_server_relative_url: str) -> None:
     resp = _requests.delete(delete_url, headers=sp._auth_headers(), timeout=60)
     if resp.status_code not in (200, 202, 204):
         resp.raise_for_status()
+
+
+def _delete_item_if_exists(sp: SharePointClient, item_server_relative_url: str) -> bool:
+    """Delete a SharePoint drive item (file or folder) if present.
+
+    Graph deletes folders recursively, which is exactly what we want for retired
+    E2E folders that may contain stale input, Processed, or Failed files.
+    """
+
+    drive_id, path_in_drive = sp._server_url_to_drive_path(item_server_relative_url)
+    meta_url = f"{_GRAPH_BASE}/drives/{drive_id}/root:{path_in_drive}:"
+    meta_resp = _requests.get(meta_url, headers=sp._auth_headers(), timeout=60)
+    if meta_resp.status_code == 404:
+        return False
+    meta_resp.raise_for_status()
+
+    item_id = meta_resp.json()["id"]
+    delete_url = f"{_GRAPH_BASE}/drives/{drive_id}/items/{item_id}"
+    delete_resp = _requests.delete(delete_url, headers=sp._auth_headers(), timeout=120)
+    if delete_resp.status_code not in (200, 202, 204):
+        delete_resp.raise_for_status()
+    return True
 
 
 def _upload_file(sp: SharePointClient, local_path: Path, folder_server_relative_url: str) -> None:
@@ -118,7 +149,9 @@ def _artifact_candidates() -> list[Path]:
         for p in root.rglob("*")
         if (
             p.is_file()
-            and p.suffix.lower() in {".csv", ".xlsx", ".xlsm", ".xls", ".parquet"}
+            # Live generated E2E artifacts intentionally exclude legacy OLE2
+            # .xls files. Parser-level OLE2 coverage remains in unit tests.
+            and p.suffix.lower() in {".csv", ".xlsx", ".xlsm", ".parquet"}
             and p.stat().st_size <= max_file_size_bytes
         )
     ])
@@ -150,6 +183,13 @@ def main() -> int:
 
     sp = SharePointClient(site_url, client_id, client_secret, tenant_id)
     sql_client = SqlClient(resolved_sql)
+
+    for retired_folder in RETIRED_E2E_FOLDERS:
+        retired_url = _resolve_folder(sp._site_path, retired_folder)
+        removed = _delete_item_if_exists(sp, retired_url)
+        print(
+            f"{retired_url}: {'removed retired OLE2 E2E folder' if removed else 'retired OLE2 E2E folder not present'}"
+        )
 
     configs = sql_client.fetch_ingestion_configs(ingestion_scope="test", active_only=True)
     if not configs:
