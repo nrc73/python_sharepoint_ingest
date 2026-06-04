@@ -86,6 +86,7 @@ class AppSettings:
     key_vault: KeyVaultSettings
     sharepoint: SharePointSettings
     email: EmailSettings
+    graph_excel_extraction_mode: str = "binary_only"
 
 
 def _sql_host_for_env(env_name: str) -> str:
@@ -280,6 +281,7 @@ def load_settings(env_override: Optional[str] = None) -> AppSettings:
         null_alert_threshold=float(os.getenv("NULL_ALERT_THRESHOLD", "0.90")),
         enable_chunked_csv=_as_bool(os.getenv("ENABLE_CHUNKED_CSV"), default=False),
         enable_chunked_parquet=_as_bool(os.getenv("ENABLE_CHUNKED_PARQUET"), default=True),
+        graph_excel_extraction_mode=os.getenv("GRAPH_EXCEL_EXTRACTION_MODE", "binary_only").strip().lower(),
         ingest_chunk_size_rows=max(1, int(os.getenv("INGEST_CHUNK_SIZE_ROWS", "5000"))),
         azure_subscription_id=os.getenv("AZURE_SUBSCRIPTION_ID") or os.getenv("AZURE_SUBSCRIPTION"),
         azure_resource_group=_resource_group_for_env(env_name),

@@ -28,11 +28,13 @@ import pandas as pd
 
 from sharepoint_ingest.config import AppSettings
 from sharepoint_ingest.file_processors import (
+    EncryptedExcelPayloadError,
     SharePointRangeReader,
     iter_csv_chunks_from_buffer,
     iter_parquet_chunks_from_file,
     open_parquet_from_range_reader,
     read_csv_from_bytes,
+    read_excel_via_graph,
     read_parquet_from_bytes,
 )
 from sharepoint_ingest.ingestion._datetime_utils import (
@@ -92,6 +94,7 @@ MAX_PARQUET_FILE_SIZE_BYTES: int = 512 * 1024 * 1024  # 512 MiB hard cap
 
 class IngestionEngine:
     _PROGRESS_PCT_STEPS = (0, 10, 25, 50, 75, 90, 100)
+    _GRAPH_EXCEL_MODES = {"binary_only", "protected_auto", "cloud_excel_only"}
 
     def __init__(
         self,
@@ -658,9 +661,27 @@ class IngestionEngine:
                 audit_id=audit_id,
             )
 
-        payload = self.sharepoint_client.download_file_to_bytes(server_relative_url)
-        self._capture_memory_peak_mb()
-        dataframe = self._parse_file(config, payload, file_name)
+        if source_kind == "excel" and self._graph_excel_extraction_mode() == "cloud_excel_only":
+            self.logger.info(
+                "Config id=%s reading Excel file '%s' via Graph workbook APIs (mode=cloud_excel_only)",
+                config.id,
+                file_name,
+            )
+            dataframe = self._parse_excel_via_graph(config, server_relative_url, file_name=file_name)
+        else:
+            payload = self.sharepoint_client.download_file_to_bytes(server_relative_url)
+            self._capture_memory_peak_mb()
+            try:
+                dataframe = self._parse_file(config, payload, file_name)
+            except EncryptedExcelPayloadError:
+                if source_kind != "excel" or self._graph_excel_extraction_mode() != "protected_auto":
+                    raise
+                self.logger.info(
+                    "Config id=%s detected protected Excel payload for '%s'; retrying via Graph workbook APIs (mode=protected_auto)",
+                    config.id,
+                    file_name,
+                )
+                dataframe = self._parse_excel_via_graph(config, server_relative_url, file_name=file_name)
         self._capture_memory_peak_mb()
         dataframe = self._apply_column_mapping_if_present(dataframe, config)
         dataframe = self._apply_ingestion_metadata(
@@ -1095,6 +1116,43 @@ class IngestionEngine:
         """Delegate to :func:`~sharepoint_ingest.ingestion._excel_utils.parse_excel_payload`."""
         return parse_excel_payload(config, payload, file_name=file_name)
 
+    def _graph_excel_extraction_mode(self) -> str:
+        """Return the configured Graph Excel extraction mode.
+
+        ``binary_only`` preserves the existing download-and-parse behaviour.
+        ``protected_auto`` falls back to Graph workbook APIs only when the binary
+        parser detects an encrypted Office package.  ``cloud_excel_only`` always
+        uses Graph workbook APIs for Excel files and avoids binary downloads.
+        """
+        mode = str(
+            getattr(self.settings, "graph_excel_extraction_mode", "binary_only")
+            or "binary_only"
+        ).strip().lower()
+        if mode not in self._GRAPH_EXCEL_MODES:
+            raise ValueError(
+                "Invalid GRAPH_EXCEL_EXTRACTION_MODE value "
+                f"'{mode}'. Expected one of: {sorted(self._GRAPH_EXCEL_MODES)}"
+            )
+        return mode
+
+    def _parse_excel_via_graph(
+        self,
+        config: IngestionConfig,
+        server_relative_url: str,
+        file_name: str = "",
+    ) -> pd.DataFrame:
+        """Read an Excel workbook through Microsoft Graph workbook endpoints."""
+        display_name = file_name or server_relative_url
+        try:
+            return read_excel_via_graph(self.sharepoint_client, server_relative_url, config)
+        except Exception as exc:
+            raise ValueError(
+                "Graph Excel extraction failed for "
+                f"'{display_name}'. Confirm the token can create workbook sessions "
+                "and the identity has sensitivity-label rights to read the workbook: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
     @staticmethod
     def _attach_excel_tab_name_column(
         dataframe: pd.DataFrame, sheet_name: str
@@ -1313,6 +1371,7 @@ class IngestionEngine:
     ) -> Optional[str]:
         """Delegate to :func:`~sharepoint_ingest.ingestion._notification_helpers.extract_sheet_name_from_issues`."""
         return extract_sheet_name_from_issues(issues)
+
 
 
 

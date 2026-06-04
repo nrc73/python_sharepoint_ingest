@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Optional
+from urllib.parse import quote
 from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
@@ -131,6 +132,24 @@ class SharePointClient:
     def _get_json(self, url: str) -> dict:
         response = _requests.get(url, headers=self._auth_headers(), timeout=30)
         response.raise_for_status()
+        return response.json()
+
+    def _get_json_with_headers(self, url: str, extra_headers: dict[str, str]) -> dict:
+        headers = self._auth_headers()
+        headers.update(extra_headers)
+        response = _requests.get(url, headers=headers, timeout=60)
+        response.raise_for_status()
+        return response.json()
+
+    def _post_json(self, url: str, body: dict | None = None, *, extra_headers: dict[str, str] | None = None) -> dict:
+        headers = self._auth_headers()
+        headers["Content-Type"] = "application/json"
+        if extra_headers:
+            headers.update(extra_headers)
+        response = _requests.post(url, headers=headers, json=body or {}, timeout=60)
+        response.raise_for_status()
+        if not response.content:
+            return {}
         return response.json()
 
     def _is_transient_request_error(self, exc: Exception) -> bool:
@@ -383,6 +402,70 @@ class SharePointClient:
 
     def download_file_to_buffer(self, server_relative_url: str) -> BytesIO:
         return BytesIO(self.download_file_to_bytes(server_relative_url))
+
+    # ------------------------------------------------------------------
+    # Microsoft Graph Excel workbook APIs
+    # ------------------------------------------------------------------
+
+    def _workbook_base_url(self, server_relative_url: str) -> str:
+        """Return the Graph workbook base URL for a SharePoint file."""
+        drive_id, _path = self._server_url_to_drive_path(server_relative_url)
+        item = self.get_file_item(server_relative_url)
+        item_id = quote(str(item["id"]), safe="")
+        return f"{_GRAPH_BASE}/drives/{drive_id}/items/{item_id}/workbook"
+
+    def create_excel_workbook_session(
+        self,
+        server_relative_url: str,
+        *,
+        persist_changes: bool = False,
+    ) -> str:
+        """Create an Excel Online workbook session and return its session id.
+
+        This uses Graph workbook APIs instead of downloading the workbook binary,
+        allowing Office Online to handle tenant-side sensitivity-label protected
+        workbooks when the token is authorised to read them.
+        """
+        data = self._post_json(
+            f"{self._workbook_base_url(server_relative_url)}/createSession",
+            {"persistChanges": bool(persist_changes)},
+        )
+        session_id = str(data.get("id") or "")
+        if not session_id:
+            raise RuntimeError("Graph Excel createSession did not return a session id")
+        return session_id
+
+    def close_excel_workbook_session(self, server_relative_url: str, session_id: str) -> None:
+        """Close a Graph Excel workbook session, ignoring empty response bodies."""
+        self._post_json(
+            f"{self._workbook_base_url(server_relative_url)}/closeSession",
+            {},
+            extra_headers={"Workbook-Session-Id": session_id},
+        )
+
+    def list_excel_worksheets(self, server_relative_url: str, session_id: str) -> list[dict]:
+        """Return worksheet metadata for a workbook session."""
+        data = self._get_json_with_headers(
+            f"{self._workbook_base_url(server_relative_url)}/worksheets",
+            {"Workbook-Session-Id": session_id},
+        )
+        return list(data.get("value", []))
+
+    def get_excel_used_range(
+        self,
+        server_relative_url: str,
+        session_id: str,
+        worksheet_id: str,
+        *,
+        values_only: bool = True,
+    ) -> dict:
+        """Return the used range for *worksheet_id* via Graph Excel APIs."""
+        escaped_sheet_id = quote(str(worksheet_id), safe="")
+        suffix = "true" if values_only else "false"
+        return self._get_json_with_headers(
+            f"{self._workbook_base_url(server_relative_url)}/worksheets/{escaped_sheet_id}/usedRange(valuesOnly={suffix})",
+            {"Workbook-Session-Id": session_id},
+        )
 
     def folder_exists(self, folder_server_relative_url: str) -> bool:
         """Return ``True`` if the folder exists on SharePoint, ``False`` otherwise.

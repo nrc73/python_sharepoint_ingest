@@ -22,16 +22,27 @@ from sharepoint_ingest.models import IngestionConfig
 class DummySharePointClient:
     """In-memory SharePoint stub — serves payload bytes, tracks moves."""
 
-    def __init__(self, payload: bytes, *, existing_folders: set[str] | None = None):
+    def __init__(
+        self,
+        payload: bytes,
+        *,
+        existing_folders: set[str] | None = None,
+        graph_excel_sheets: dict[str, list[list]] | None = None,
+    ):
         self._payload = payload
+        self.download_bytes_calls = 0
         self.moved_to: list[tuple[str, str]] = []
         self.ensure_folder_calls: list[tuple[str, bool]] = []
         self._existing_folders: set[str] = existing_folders or set()
+        self.graph_excel_sheets = graph_excel_sheets or {}
+        self.graph_sessions_created = 0
+        self.graph_sessions_closed: list[str] = []
 
     def download_file_to_buffer(self, server_relative_url: str):
         return BytesIO(self._payload)
 
     def download_file_to_bytes(self, server_relative_url: str) -> bytes:
+        self.download_bytes_calls += 1
         return self._payload
 
     def get_file_item(self, server_relative_url: str) -> dict:
@@ -57,6 +68,29 @@ class DummySharePointClient:
     def move_file(self, src: str, dest_folder: str) -> str:
         self.moved_to.append((src, dest_folder))
         return f"{dest_folder.rstrip('/')}/moved.csv"
+
+    def create_excel_workbook_session(self, server_relative_url: str, *, persist_changes: bool = False) -> str:
+        self.graph_sessions_created += 1
+        return f"session-{self.graph_sessions_created}"
+
+    def close_excel_workbook_session(self, server_relative_url: str, session_id: str) -> None:
+        self.graph_sessions_closed.append(session_id)
+
+    def list_excel_worksheets(self, server_relative_url: str, session_id: str) -> list[dict]:
+        return [
+            {"id": name, "name": name, "position": idx, "visibility": "Visible"}
+            for idx, name in enumerate(self.graph_excel_sheets)
+        ]
+
+    def get_excel_used_range(
+        self,
+        server_relative_url: str,
+        session_id: str,
+        worksheet_id: str,
+        *,
+        values_only: bool = True,
+    ) -> dict:
+        return {"values": self.graph_excel_sheets[str(worksheet_id)]}
 
 
 class DummySqlClient:
@@ -127,6 +161,7 @@ def make_settings(chunked: bool = True, chunk_size: int = 2) -> SimpleNamespace:
         null_alert_threshold=0.9,
         enable_chunked_csv=chunked,
         enable_chunked_parquet=True,
+        graph_excel_extraction_mode="binary_only",
         ingest_chunk_size_rows=chunk_size,
         env_name="test",
     )
@@ -186,6 +221,8 @@ def make_engine(
         sp or DummySharePointClient(payload),
         logging.getLogger(logger_name),
     )
+
+
 
 
 
