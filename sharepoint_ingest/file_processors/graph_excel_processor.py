@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import pandas as pd
 
@@ -144,3 +144,59 @@ def read_excel_via_graph(
         return pd.concat(frames, ignore_index=True)
     finally:
         sharepoint_client.close_excel_workbook_session(server_relative_url, session_id)
+
+
+def read_excel_sheets_via_graph(
+    sharepoint_client: Any,
+    server_relative_url: str,
+    *,
+    header_skip_rows: int = 0,
+    sheet_selector: str = "ALL_SHEETS",
+    progress: Callable[[str], None] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Read selected worksheet data via Microsoft Graph workbook APIs.
+
+    Unlike :func:`read_excel_via_graph`, this returns one DataFrame per worksheet.
+    That shape is useful for discovery/profiling tools that need to preserve sheet
+    boundaries before deciding whether to add ``excel_tab_name`` metadata.
+
+    The optional *progress* callback receives human-readable diagnostic messages
+    after each Graph workbook step succeeds.
+    """
+
+    def _emit(message: str) -> None:
+        if progress is not None:
+            progress(message)
+
+    session_id = sharepoint_client.create_excel_workbook_session(
+        server_relative_url, persist_changes=False
+    )
+    _emit("createSession success")
+    try:
+        worksheets = sharepoint_client.list_excel_worksheets(server_relative_url, session_id)
+        _emit(f"worksheets found: {len(worksheets)}")
+        selected, _attach_names = _select_worksheets(worksheets, sheet_selector)
+
+        sheets: dict[str, pd.DataFrame] = {}
+        for worksheet in selected:
+            worksheet_name = _worksheet_name(worksheet)
+            worksheet_id = _worksheet_id(worksheet)
+            used_range = sharepoint_client.get_excel_used_range(
+                server_relative_url,
+                session_id,
+                worksheet_id,
+                values_only=True,
+            )
+            dataframe = dataframe_from_used_range_values(
+                list(used_range.get("values") or []),
+                header_skip_rows=header_skip_rows,
+            )
+            sheets[worksheet_name] = dataframe
+            _emit(
+                f"read sheet '{worksheet_name}' rows={len(dataframe)} cols={len(dataframe.columns)}"
+            )
+
+        return sheets
+    finally:
+        sharepoint_client.close_excel_workbook_session(server_relative_url, session_id)
+        _emit("closeSession success")

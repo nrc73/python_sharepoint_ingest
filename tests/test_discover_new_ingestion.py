@@ -31,6 +31,7 @@ from tools.discover_new_ingestion import (
     _generate_config_insert,
     _generate_mapping_csv_rows,
     _list_folders_to_depth,
+    _build_profile_candidate,
     _read_file_sheets,
     _safe_suffix_from_file_name,
     _same_filename_family,
@@ -131,6 +132,119 @@ def test_read_file_sheets_skips_invalid_ole2_excel_with_specific_warning(
     output = capsys.readouterr().out
     assert "Skipping unreadable Excel file 'bad.xlsx'" in output
     assert "no BIFF Workbook/Book stream" in output
+
+
+class _DiscoveryGraphStub:
+    def __init__(self, payload: bytes, *, graph_excel_sheets: dict[str, list[list]] | None = None):
+        self._payload = payload
+        self.graph_excel_sheets = graph_excel_sheets or {}
+        self.download_bytes_calls = 0
+        self.graph_sessions_created = 0
+        self.graph_sessions_closed: list[str] = []
+
+    def download_file_to_bytes(self, server_relative_url: str) -> bytes:
+        self.download_bytes_calls += 1
+        return self._payload
+
+    def create_excel_workbook_session(self, server_relative_url: str, *, persist_changes: bool = False) -> str:
+        self.graph_sessions_created += 1
+        return f"session-{self.graph_sessions_created}"
+
+    def close_excel_workbook_session(self, server_relative_url: str, session_id: str) -> None:
+        self.graph_sessions_closed.append(session_id)
+
+    def list_excel_worksheets(self, server_relative_url: str, session_id: str) -> list[dict]:
+        return [
+            {"id": name, "name": name, "position": idx, "visibility": "Visible"}
+            for idx, name in enumerate(self.graph_excel_sheets)
+        ]
+
+    def get_excel_used_range(
+        self,
+        server_relative_url: str,
+        session_id: str,
+        worksheet_id: str,
+        *,
+        values_only: bool = True,
+    ) -> dict:
+        return {"values": self.graph_excel_sheets[str(worksheet_id)]}
+
+
+def test_build_profile_candidate_falls_back_to_graph_for_encrypted_excel(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = excel_processor._OLE2_MAGIC + b"encrypted-placeholder"
+    monkeypatch.setattr(
+        excel_processor,
+        "_ole2_stream_names",
+        lambda _payload: {"encryptioninfo", "encryptedpackage"},
+    )
+    sp = _DiscoveryGraphStub(
+        payload,
+        graph_excel_sheets={
+            "Sheet1": [["id", "value"], [1, "a"]],
+            "Sheet2": [["id", "value"], [2, "b"]],
+        },
+    )
+    fi = SimpleNamespace(name="protected.xlsx", server_relative_url="/folder/protected.xlsx")
+
+    candidate = _build_profile_candidate(sp, fi)
+
+    assert candidate is not None
+    assert candidate.file_kind == "excel"
+    assert candidate.any_excel is True
+    assert candidate.combined_profile == {"id": "INT", "value": "VARCHAR:1"}
+    assert sp.download_bytes_calls == 1
+    assert sp.graph_sessions_created == 1
+    assert sp.graph_sessions_closed == ["session-1"]
+    output = capsys.readouterr().out
+    assert "method=binary-download: starting" in output
+    assert "method=binary-parse: detected encrypted/protected payload" in output
+    assert "method=graph-workbook: attempting createSession" in output
+    assert "method=graph-workbook: createSession success" in output
+    assert "method=graph-workbook: success" in output
+
+
+class _FakeGraphPermissionError(Exception):
+    def __init__(self):
+        super().__init__("403 Forbidden")
+        self.response = SimpleNamespace(
+            status_code=403,
+            reason="Forbidden",
+            text="{\"error\": {\"code\": \"accessDenied\"}}",
+        )
+
+
+class _ForbiddenGraphStub(_DiscoveryGraphStub):
+    def create_excel_workbook_session(self, server_relative_url: str, *, persist_changes: bool = False) -> str:
+        raise _FakeGraphPermissionError()
+
+
+def test_read_file_sheets_prints_spn_permission_guidance_when_graph_fallback_forbidden(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = excel_processor._OLE2_MAGIC + b"encrypted-placeholder"
+    monkeypatch.setattr(
+        excel_processor,
+        "_ole2_stream_names",
+        lambda _payload: {"encryptioninfo", "encryptedpackage"},
+    )
+
+    result = _read_file_sheets(
+        payload,
+        "protected.xlsx",
+        sp=_ForbiddenGraphStub(payload),
+        server_relative_url="/folder/protected.xlsx",
+    )
+
+    assert result == {}
+    output = capsys.readouterr().out
+    assert "Graph workbook extraction failed for 'protected.xlsx': HTTP 403" in output
+    assert "SPN token is valid but is not authorised" in output
+    assert "Graph application permissions/admin consent" in output
+    assert "tools/diagnostics/graph_excel_probe.py --env dev" in output
 
 
 @pytest.mark.parametrize("env_name", ["test", "prod", "", "DEVX"])
@@ -752,6 +866,7 @@ def test_discover_passes_resolved_credentials_to_sql_client() -> None:
     assert used.username == "kv_user"
     assert used.password == "kv_pass"
     assert used.database == "ingest_audit_dev"
+
 
 
 

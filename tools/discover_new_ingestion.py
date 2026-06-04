@@ -280,7 +280,77 @@ def _merge_profiles(base: dict[str, str], new: dict[str, str]) -> dict[str, str]
     return merged
 
 
-def _read_file_sheets(file_bytes: bytes, file_name: str) -> dict[str, pd.DataFrame]:
+def _http_status_from_exception(exc: Exception) -> int | None:
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        return status
+    match = re.search(r"\b(401|403|404|429|5\d\d)\b", str(exc))
+    return int(match.group(1)) if match else None
+
+
+def _http_response_snippet(exc: Exception, *, max_chars: int = 300) -> str:
+    response = getattr(exc, "response", None)
+    text = str(getattr(response, "text", "") or "").strip()
+    reason = str(getattr(response, "reason", "") or "").strip()
+    snippet = text or reason
+    if len(snippet) > max_chars:
+        snippet = snippet[:max_chars] + "…"
+    return snippet
+
+
+def _print_graph_excel_failure_diagnostics(
+    *,
+    file_name: str,
+    server_relative_url: str,
+    exc: Exception,
+) -> None:
+    status = _http_status_from_exception(exc)
+    snippet = _http_response_snippet(exc)
+    status_text = f"HTTP {status}" if status is not None else type(exc).__name__
+    print(f"    [ERROR] Graph workbook extraction failed for '{file_name}': {status_text}: {exc}")
+    if snippet:
+        print(f"    [ERROR] Graph response: {snippet}")
+
+    if status == 401:
+        print("    [PERMISSION] The SPN could not authenticate to Microsoft Graph (401 Unauthorized).")
+        print("    [PERMISSION] Check the client id/secret/tenant in Key Vault or environment variables and confirm the secret has not expired.")
+    elif status == 403:
+        print("    [PERMISSION] The SPN token is valid but is not authorised to open this workbook via Graph Excel APIs (403 Forbidden).")
+        print("    [PERMISSION] Check Graph application permissions/admin consent, SharePoint site access, and sensitivity-label/MIP rights for the SPN.")
+    elif status == 404:
+        print("    [PERMISSION] Graph could not resolve the workbook item (404 Not Found). Check the server-relative URL, site URL, and document library path.")
+    else:
+        print("    [PERMISSION] If this workbook is Purview/sensitivity-label protected, verify the SPN is allowed to read the file through Office Online/Graph workbook APIs.")
+
+    print(
+        "    [PERMISSION] Suggested diagnostic: "
+        f"python tools/diagnostics/graph_excel_probe.py --env dev --file-url \"{server_relative_url}\""
+    )
+
+
+def _read_excel_sheets_via_graph_for_discovery(sp, server_relative_url: str, file_name: str) -> dict[str, pd.DataFrame]:
+    from sharepoint_ingest.file_processors import read_excel_sheets_via_graph
+
+    print("    [excel] method=graph-workbook: attempting createSession/read worksheets/usedRange")
+    sheets = read_excel_sheets_via_graph(
+        sp,
+        server_relative_url,
+        header_skip_rows=0,
+        sheet_selector="ALL_SHEETS",
+        progress=lambda message: print(f"    [excel] method=graph-workbook: {message}"),
+    )
+    print(f"    [excel] method=graph-workbook: success ({len(sheets)} sheet(s))")
+    return sheets
+
+
+def _read_file_sheets(
+    file_bytes: bytes,
+    file_name: str,
+    *,
+    sp=None,
+    server_relative_url: str = "",
+) -> dict[str, pd.DataFrame]:
     """Return {sheet_key: dataframe}.  Non-Excel files get key 'default'."""
     lower = file_name.lower()
     try:
@@ -292,7 +362,10 @@ def _read_file_sheets(file_bytes: bytes, file_name: str) -> dict[str, pd.DataFra
             return {"default": read_parquet_from_bytes(BytesIO(file_bytes))}
         if any(lower.endswith(e) for e in (".xlsx", ".xls", ".xlsm")):
             from sharepoint_ingest.file_processors import read_all_excel_sheets_from_bytes
-            return read_all_excel_sheets_from_bytes(file_bytes, file_name=file_name)
+            print("    [excel] method=binary-parse: attempting pandas/openpyxl/xlrd parse")
+            sheets = read_all_excel_sheets_from_bytes(file_bytes, file_name=file_name)
+            print(f"    [excel] method=binary-parse: success ({len(sheets)} sheet(s))")
+            return sheets
         print(f"    [SKIP] Unsupported file type: {file_name}")
         return {}
     except Exception as exc:
@@ -306,6 +379,22 @@ def _read_file_sheets(file_bytes: bytes, file_name: str) -> dict[str, pd.DataFra
             EncryptedExcelPayloadError = InvalidExcelPayloadError = ExcelPayloadError = ()  # type: ignore[assignment]
 
         if isinstance(exc, EncryptedExcelPayloadError):
+            print(f"    [excel] method=binary-parse: detected encrypted/protected payload: {exc}")
+            if sp is not None and server_relative_url:
+                try:
+                    return _read_excel_sheets_via_graph_for_discovery(
+                        sp,
+                        server_relative_url,
+                        file_name,
+                    )
+                except Exception as graph_exc:
+                    _print_graph_excel_failure_diagnostics(
+                        file_name=file_name,
+                        server_relative_url=server_relative_url,
+                        exc=graph_exc,
+                    )
+                    print(f"    [WARN] Skipping encrypted Excel file '{file_name}' after Graph workbook fallback failed.")
+                    return {}
             print(f"    [WARN] Skipping encrypted Excel file '{file_name}': {exc}")
             return {}
         if isinstance(exc, InvalidExcelPayloadError):
@@ -814,12 +903,17 @@ def _snake_case_identifier_fragment(value: str, *, fallback: str) -> str:
 
 def _build_profile_candidate(sp, fi) -> _ProfileCandidate | None:
     try:
+        print("    [excel] method=binary-download: starting" if _is_excel(fi.name) else "    [download] starting")
         raw = sp.download_file_to_bytes(fi.server_relative_url)
+        if _is_excel(fi.name):
+            print(f"    [excel] method=binary-download: downloaded {len(raw)} bytes")
+        else:
+            print(f"    [download] downloaded {len(raw)} bytes")
     except Exception as exc:
         print(f"    [WARN] Download failed for '{fi.name}': {exc}")
         return None
 
-    sheets = _read_file_sheets(raw, fi.name)
+    sheets = _read_file_sheets(raw, fi.name, sp=sp, server_relative_url=fi.server_relative_url)
     if not sheets:
         return None
 
@@ -1415,6 +1509,7 @@ if __name__ == "__main__":
         no_profile=args.no_profile,
         padding=args.padding,
     )
+
 
 
 
