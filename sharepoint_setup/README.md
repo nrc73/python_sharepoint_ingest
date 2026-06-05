@@ -362,7 +362,81 @@ python sharepoint_setup/spn_healthcheck_test.py \
 
 When simulation is enabled, output and email details are marked with `SIMULATED`.
 
-## 5c) Layer 5 — Validate SQL Database Mail capability (`sp_send_dbmail`)
+## 5c) Validate Graph Excel / Purview MIP workbook access
+
+Use this check to confirm the SPN can open an OLE2-encrypted (sensitivity-label protected)
+Excel workbook via Microsoft Graph Excel workbook APIs — the exact call that triggers the:
+
+```
+[PERMISSION] The SPN token is valid but is not authorised to open this workbook via
+Graph Excel APIs (403 Forbidden).
+```
+
+error when Purview Information Protection (MIP) policy blocks app-only access.
+
+The test automatically scans the configured folder (and one level of subfolders) for
+Excel files whose first 8 bytes match the OLE2 Compound Document signature.  That
+signature is present in both:
+
+- legacy BIFF `.xls` files, including `.xls` files saved with a misleading `.xlsx` name
+- MIP/sensitivity-label encrypted `.xlsx`/`.xlsm` files
+
+Only 8 bytes are downloaded per candidate file; no workbook content is read or printed.
+When an OLE2 candidate is found, the test attempts a Graph Excel `createSession` call:
+
+- `501 Not Implemented` means the file is legacy BIFF `.xls`, not a MIP-encrypted workbook;
+  the script skips it and continues scanning candidates.
+- `403 Forbidden` means the SPN reached Graph Excel but is blocked from opening the workbook,
+  usually by permissions, site access, or Purview MIP/sensitivity-label policy.
+- success means the SPN can open that protected workbook via Graph Excel APIs.
+
+```bash
+python sharepoint_setup/purview_mip_excel_test.py --env dev \
+    --folder "/sites/data_ingest_dev/Shared Documents/IncomingFiles"
+```
+
+Run for all environments (requires env-var folders):
+
+```bash
+# Set per-environment folders in .env or shell:
+# SHAREPOINT_TEST_FOLDER_DEV=/sites/data_ingest_dev/Shared Documents/IncomingFiles
+# SHAREPOINT_TEST_FOLDER_PROD=/sites/data_ingest_prod/Shared Documents/IncomingFiles
+python sharepoint_setup/purview_mip_excel_test.py --env all
+```
+
+Optional: increase the scan limit (default 20 files probed):
+
+```bash
+python sharepoint_setup/purview_mip_excel_test.py --env prod \
+    --folder "/sites/data_ingest_prod/Shared Documents/IncomingFiles" \
+    --max-scan 50
+```
+
+What this check validates:
+
+- SPN credentials and SharePoint site URL can be resolved from Key Vault
+- Graph token can list files in the folder (basic Graph connectivity)
+- OLE2-format Excel candidates are reported by name
+- Legacy BIFF `.xls` candidates are identified by Graph `501 Not Implemented` and skipped
+- For the first non-BIFF OLE2 candidate, `createSession` → `worksheets` (shape only, no values) → `closeSession` succeeds
+- On failure: maps 403 → `[PERMISSION]` with remediation steps covering Graph permissions,
+  admin consent, SharePoint site access, and Purview MIP label policy exemptions
+
+Expected outputs:
+
+| Scenario | Exit | Output |
+|---|---|---|
+| No OLE2 file in folder | 0 | "No OLE2-format Excel file found — sensitivity-label test skipped" |
+| Only legacy BIFF `.xls` OLE2 files found | 0 | "legacy BIFF .xls (Graph 501 — not MIP-encrypted, skipping)" |
+| OLE2 file found, access granted | 0 | "Tested file: …  Graph Excel / Purview MIP check: PASS" |
+| OLE2 file found, 403 from MIP | 1 | "[PERMISSION] … 403 Forbidden … remediation steps …" |
+
+> **Note:** On a local dev system without protected workbooks the test may report either
+> "no OLE2 file found" or "legacy BIFF .xls … skipping".  Both are correct and expected —
+> the Purview/MIP permission test activates automatically once a sensitivity-label protected
+> `.xlsx` is placed in the scanned folder on production.
+
+## 5d) Layer 5 — Validate SQL Database Mail capability (`sp_send_dbmail`)
 
 ```bash
 python sharepoint_setup/dbmail_send_test.py --env prod --profile-name "Prod SQL Mail" --to "you@company.com"
