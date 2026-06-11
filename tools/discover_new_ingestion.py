@@ -13,8 +13,8 @@ Read-only discovery tool that:
    column combinations across the full dataset.
 6. Prints ready-to-run T-SQL:
    - CREATE TABLE [schema].[dest_<folder>] with system columns matching existing
-     conventions: source_file_name, sp_ingest_created_utc, sp_ingest_modified_utc,
-     and excel_tab_name (for Excel ingestions).
+     conventions: source_file_name, sp_ingest_load_dt, audit_id, __$batch_id,
+     __$job_instance_id, and excel_tab_name (for Excel ingestions).
    - INSERT INTO [config].[sharepoint_ingestion] ...
 
 Usage (DEV only)
@@ -66,17 +66,21 @@ from sharepoint_ingest.sql_client import SqlClient
 _SYSTEM_COLUMNS_EXCEL = [
     ("excel_tab_name",          "VARCHAR(100)",  "NOT NULL"),
     ("source_file_name",        "VARCHAR(255)",  "NULL"),
-    ("sp_ingest_created_utc",   "DATETIME2(7)",  "NOT NULL  DEFAULT SYSUTCDATETIME()"),
-    ("sp_ingest_modified_utc",  "DATETIME2(7)",  "NOT NULL  DEFAULT SYSUTCDATETIME()"),
+    ("sp_ingest_load_dt",       "DATETIME2(7)",  "NOT NULL  DEFAULT SYSUTCDATETIME()"),
+    ("audit_id",                "BIGINT",        "NULL"),
+    ("__$batch_id",             "INT",           "NULL"),
+    ("__$job_instance_id",      "INT",           "NULL"),
 ]
 _SYSTEM_COLUMNS_PLAIN = [
     ("source_file_name",        "VARCHAR(255)",  "NULL"),
-    ("sp_ingest_created_utc",   "DATETIME2(7)",  "NOT NULL  DEFAULT SYSUTCDATETIME()"),
-    ("sp_ingest_modified_utc",  "DATETIME2(7)",  "NOT NULL  DEFAULT SYSUTCDATETIME()"),
+    ("sp_ingest_load_dt",       "DATETIME2(7)",  "NOT NULL  DEFAULT SYSUTCDATETIME()"),
+    ("audit_id",                "BIGINT",        "NULL"),
+    ("__$batch_id",             "INT",           "NULL"),
+    ("__$job_instance_id",      "INT",           "NULL"),
 ]
 _SKIP_FOLDER_NAMES = {"processed", "failed", "archive", "_archive", "_processed", "_failed"}
 _DEFAULT_NOTIFICATION_TO = "NathanChapman@company715.onmicrosoft.com"
-_DEFAULT_DEST_SCHEMA = "staging"
+_DEFAULT_DEST_SCHEMA = "sharepoint"
 
 # Column name patterns that indicate a good PK candidate (id/no/guid suffix or prefix)
 _PK_NAME_RE = re.compile(
@@ -438,7 +442,14 @@ def _pk_inference(df: pd.DataFrame, is_excel_ingest: bool, col_raw_types: dict[s
     if n == 0:
         return _no_pk(n)
 
-    _sys_excl = {"source_file_name", "excel_tab_name", "sp_ingest_created_utc", "sp_ingest_modified_utc"}
+    _sys_excl = {
+        "source_file_name",
+        "excel_tab_name",
+        "sp_ingest_load_dt",
+        "audit_id",
+        "__$batch_id",
+        "__$job_instance_id",
+    }
 
     # Build set of numeric columns (from the profiled raw types when available)
     numeric_cols: set[str] = set()
@@ -1509,6 +1520,7 @@ if __name__ == "__main__":
         no_profile=args.no_profile,
         padding=args.padding,
     )
+
 
 
 

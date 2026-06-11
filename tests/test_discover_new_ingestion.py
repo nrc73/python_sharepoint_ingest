@@ -19,6 +19,7 @@ from sharepoint_ingest.config import (
     SqlSettings,
 )
 from tools.discover_new_ingestion import (
+    _DEFAULT_DEST_SCHEMA,
     _MAPPING_CSV_HEADER,
     _MAPPING_FIRST_ROW_COMMENT,
     _ProfileCandidate,
@@ -29,6 +30,7 @@ from tools.discover_new_ingestion import (
     _col_type_with_nullability,
     _configured_folder_keys,
     _generate_config_insert,
+    _generate_create_table,
     _generate_mapping_csv_rows,
     _list_folders_to_depth,
     _build_profile_candidate,
@@ -412,7 +414,7 @@ def test_col_type_with_nullability_int_non_pk() -> None:
 # ---------------------------------------------------------------------------
 
 def test_system_col_type_strips_default_expression() -> None:
-    # The extra for sp_ingest_created_utc is "NOT NULL  DEFAULT SYSUTCDATETIME()"
+    # The extra for sp_ingest_load_dt is "NOT NULL  DEFAULT SYSUTCDATETIME()"
     result = _system_col_type_with_nullability("DATETIME2(7)", "NOT NULL  DEFAULT SYSUTCDATETIME()")
     assert result == "DATETIME2(7) NOT NULL"
 
@@ -570,8 +572,12 @@ def test_mapping_csv_system_columns_appended_after_business_columns() -> None:
     source_col_names = [r["Source column"] for r in rows]
     staging_col_names = [r["Staging column"] for r in rows]
     assert source_col_names.index("biz_col") < staging_col_names.index("source_file_name")
-    assert "sp_ingest_created_utc" in staging_col_names
-    assert "sp_ingest_modified_utc" in staging_col_names
+    assert "sp_ingest_load_dt" in staging_col_names
+    assert "audit_id" in staging_col_names
+    assert "__$batch_id" in staging_col_names
+    assert "__$job_instance_id" in staging_col_names
+    assert "sp_ingest_created_utc" not in staging_col_names
+    assert "sp_ingest_modified_utc" not in staging_col_names
 
 
 def test_mapping_csv_system_columns_strip_default_expression() -> None:
@@ -585,12 +591,35 @@ def test_mapping_csv_system_columns_strip_default_expression() -> None:
     )
     rows = _parse_csv(result)
     # System columns have Source column="" — use Staging column to locate them
-    created_row = next(r for r in rows if r["Staging column"] == "sp_ingest_created_utc")
+    load_dt_row = next(r for r in rows if r["Staging column"] == "sp_ingest_load_dt")
     # Source column must be empty (engine-managed, not present in source file)
-    assert created_row["Source column"] == ""
+    assert load_dt_row["Source column"] == ""
     # DEFAULT clause must NOT appear in the mapping type string
-    assert "DEFAULT" not in created_row["Staging type"]
-    assert "DATETIME2(7) NOT NULL" == created_row["Staging type"]
+    assert "DEFAULT" not in load_dt_row["Staging type"]
+    assert "DATETIME2(7) NOT NULL" == load_dt_row["Staging type"]
+
+
+def test_mapping_csv_plain_system_columns_match_destination_conventions() -> None:
+    result = _generate_mapping_csv_rows(
+        object_name="obj",
+        source_object="src",
+        data_columns={"biz_col": "INT"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=[],
+        as_of_date=_FIXED_DATE,
+    )
+    rows = _parse_csv(result)
+    by_staging_col = {r["Staging column"]: r for r in rows}
+
+    assert by_staging_col["sp_ingest_load_dt"]["Staging type"] == "DATETIME2(7) NOT NULL"
+    assert by_staging_col["audit_id"]["Staging type"] == "BIGINT NULL"
+    assert by_staging_col["__$batch_id"]["Staging type"] == "INT NULL"
+    assert by_staging_col["__$job_instance_id"]["Staging type"] == "INT NULL"
+    assert "sp_ingest_created_utc" not in by_staging_col
+    assert "sp_ingest_modified_utc" not in by_staging_col
+
+    for col_name in ["sp_ingest_load_dt", "audit_id", "__$batch_id", "__$job_instance_id"]:
+        assert by_staging_col[col_name]["Source column"] == ""
 
 
 def test_mapping_csv_excel_system_columns_include_excel_tab_name() -> None:
@@ -606,6 +635,30 @@ def test_mapping_csv_excel_system_columns_include_excel_tab_name() -> None:
     # System columns use Staging column (Source column is empty for engine-managed columns)
     staging_col_names = [r["Staging column"] for r in rows]
     assert "excel_tab_name" in staging_col_names
+
+
+def test_default_dest_schema_is_sharepoint() -> None:
+    assert _DEFAULT_DEST_SCHEMA == "sharepoint"
+
+
+def test_generate_create_table_uses_sharepoint_schema_and_managed_columns() -> None:
+    sql = _generate_create_table(
+        schema=_DEFAULT_DEST_SCHEMA,
+        table_name="dest_orders",
+        data_columns={"order_id": "INT", "amount": "FLOAT"},
+        system_columns=_SYSTEM_COLUMNS_PLAIN,
+        pk_columns=["order_id"],
+    )
+
+    assert sql.startswith("CREATE TABLE [sharepoint].[dest_orders] (")
+    assert "[sp_ingest_load_dt]" in sql
+    assert "DATETIME2(7)" in sql
+    assert "[audit_id]" in sql
+    assert "BIGINT" in sql
+    assert "[__$batch_id]" in sql
+    assert "[__$job_instance_id]" in sql
+    assert "[sp_ingest_created_utc]" not in sql
+    assert "[sp_ingest_modified_utc]" not in sql
 
 
 def test_mapping_csv_staging_and_integrated_types_are_identical() -> None:
@@ -866,6 +919,7 @@ def test_discover_passes_resolved_credentials_to_sql_client() -> None:
     assert used.username == "kv_user"
     assert used.password == "kv_pass"
     assert used.database == "ingest_audit_dev"
+
 
 
 
