@@ -9,8 +9,6 @@ Uploads:
       → /sites/data_ingest_dev/Documents/valid_transactions_large/
   tests/sample_artifacts/valid/excel/valid_customers_001.xlsx
       → /sites/data_ingest_dev/Documents/valid_customers/
-  tests/sample_artifacts/valid/excel/valid_ole2_customers_001.xls
-      → /sites/data_ingest_dev/Documents/valid_ole2_excel/
 
 Usage:
     python tools/sharepoint_ops/_upload_sample_files.py
@@ -95,10 +93,6 @@ def main() -> int:
         (
             Path("tests/sample_artifacts/valid/excel/valid_customers_001.xlsx"),
             f"{site_path}/Documents/valid_customers",
-        ),
-        (
-            Path("tests/sample_artifacts/valid/excel/valid_ole2_customers_001.xls"),
-            f"{site_path}/Documents/valid_ole2_excel",
         ),
     ]
 

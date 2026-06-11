@@ -57,20 +57,32 @@ def check_for_intra_file_duplicate_keys(
     resolved_load_strategy: str,
     sql_client,
     logger: logging.Logger,
+    *,
+    enforce_for_truncate: bool = False,
+    key_columns: list[str] | None = None,
 ) -> None:
     """Pre-flight duplicate-key check — runs before any SQL write.
 
-    Only active when *resolved_load_strategy* is ``"APPEND"``.  If duplicate
-    values are found on the resolved key columns the function raises a
+    Active when *resolved_load_strategy* is ``"APPEND"``.  Callers may also
+    set *enforce_for_truncate* for strict full-reload modes where duplicate
+    values in the incoming data would violate a staging-table PK even after the
+    table has been truncated.  If duplicate values are found on the resolved key
+    columns the function raises a
     ``ValueError`` with the ``PRIMARY_KEY_VIOLATION:`` prefix so the engine
     can route it to the dedicated PK violation notification path.
     """
-    if resolved_load_strategy != "APPEND":
+    if resolved_load_strategy != "APPEND" and not enforce_for_truncate:
         return
 
-    try:
-        key_columns = resolve_merge_keys(config, sql_client, logger)
-    except Exception:
+    if key_columns is None:
+        try:
+            key_columns = resolve_merge_keys(config, sql_client, logger)
+        except Exception:
+            return
+    else:
+        key_columns = [c.strip() for c in key_columns if c and c.strip()]
+
+    if not key_columns:
         return
 
     available_keys = [k for k in key_columns if k in dataframe.columns]

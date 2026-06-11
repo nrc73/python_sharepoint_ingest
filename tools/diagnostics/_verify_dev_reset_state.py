@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 
 PROJECT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -18,24 +19,46 @@ def _count(sql_client: SqlClient, query: str) -> int:
 
 def main() -> int:
     settings = load_settings(env_override="dev")
-    sql_client = SqlClient(settings.sql)
+    aud_sql = SqlClient(replace(settings.sql, database="ingest_audit_dev"))
+    int_sql = SqlClient(replace(settings.sql, database="ingest_int_dev"))
 
     checks = {
-        "dest_customers": _count(sql_client, "SELECT COUNT(1) AS cnt FROM sharepoint.dest_customers"),
-        "dest_transactions": _count(sql_client, "SELECT COUNT(1) AS cnt FROM sharepoint.dest_transactions"),
-        "dest_transactions_large": _count(sql_client, "SELECT COUNT(1) AS cnt FROM sharepoint.dest_transactions_large"),
-        "audit_log": _count(sql_client, "SELECT COUNT(1) AS cnt FROM log.sharepoint_ingestion_audit"),
+        "dest_customers": _count(int_sql, "SELECT COUNT(1) AS cnt FROM sharepoint.dest_customers"),
+        "dest_transactions": _count(int_sql, "SELECT COUNT(1) AS cnt FROM sharepoint.dest_transactions"),
+        "dest_transactions_parquet": _count(int_sql, "SELECT COUNT(1) AS cnt FROM sharepoint.dest_transactions_parquet"),
+        "dest_transactions_large": _count(int_sql, "SELECT COUNT(1) AS cnt FROM sharepoint.dest_transactions_large"),
+        "audit_log": _count(aud_sql, "SELECT COUNT(1) AS cnt FROM log.sharepoint_ingestion_audit"),
         "valid_config_workflows": _count(
-            sql_client,
+            aud_sql,
             """
             SELECT COUNT(1) AS cnt
             FROM config.sharepoint_ingestion
             WHERE workflow_id IN (
                 'wf-valid-customers',
                 'wf-valid-transactions-standard',
+                'wf-valid-transactions-parquet',
                 'wf-valid-transactions-large'
             )
             AND is_active = '1'
+            """,
+        ),
+        "all_active_test_workflows": _count(
+            aud_sql,
+            """
+            SELECT COUNT(1) AS cnt
+            FROM config.sharepoint_ingestion
+            WHERE ingestion_scope = 'TEST'
+              AND is_active = '1'
+            """,
+        ),
+        "ole2_live_workflows": _count(
+            aud_sql,
+            """
+            SELECT COUNT(1) AS cnt
+            FROM config.sharepoint_ingestion
+            WHERE workflow_id LIKE '%ole2%'
+               OR staging_table_name LIKE '%ole2%'
+               OR sharepoint_process_folder LIKE '%ole2%'
             """,
         ),
     }
@@ -48,4 +71,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

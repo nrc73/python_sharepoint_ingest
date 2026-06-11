@@ -291,6 +291,83 @@ class SqlClient:
         rows = self.query_rows(sql_text, {"schema": schema, "table": table})
         return [str(r["column_name"]) for r in rows]
 
+    def get_primary_key_columns_in_database(self, database_name: str, table_name: str) -> list[str]:
+        """Return PK columns for a table in another database on the same SQL Server."""
+        schema, table = _parse_table_name(table_name)
+        db_q = _quote_identifier(database_name)
+        sql_text = f"""
+        SELECT KU.COLUMN_NAME
+        FROM {db_q}.INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS TC
+        INNER JOIN {db_q}.INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS KU
+            ON TC.CONSTRAINT_NAME = KU.CONSTRAINT_NAME
+            AND TC.TABLE_SCHEMA = KU.TABLE_SCHEMA
+            AND TC.TABLE_NAME = KU.TABLE_NAME
+        WHERE TC.CONSTRAINT_TYPE = 'PRIMARY KEY'
+          AND KU.TABLE_SCHEMA = :schema
+          AND KU.TABLE_NAME = :table
+        ORDER BY KU.ORDINAL_POSITION
+        """
+        rows = self.query_rows(sql_text, {"schema": schema, "table": table})
+        return [str(r["column_name"]) for r in rows]
+
+    def count_duplicate_keys(self, table_name: str, key_columns: list[str]) -> int:
+        """Count duplicate key groups currently present in a table."""
+        normalized_keys = [k.strip() for k in key_columns if k and k.strip()]
+        if not normalized_keys:
+            return 0
+
+        schema, table = _parse_table_name(table_name)
+        qualified = f"{_quote_identifier(schema)}.{_quote_identifier(table)}"
+        key_expr = ", ".join(_quote_identifier(k) for k in normalized_keys)
+        sql_text = f"""
+        SELECT COUNT(*) AS n
+        FROM (
+            SELECT {key_expr}
+            FROM {qualified}
+            GROUP BY {key_expr}
+            HAVING COUNT(*) > 1
+        ) AS dupes
+        """
+        rows = self.query_rows(sql_text)
+        return int(rows[0]["n"]) if rows else 0
+
+    def count_key_conflicts_with_int(
+        self,
+        stg_table_name: str,
+        int_database: str,
+        int_table_name: str,
+        key_columns: list[str],
+    ) -> int:
+        """Count distinct staging keys that already exist in the integrated table."""
+        normalized_keys = [k.strip() for k in key_columns if k and k.strip()]
+        if not normalized_keys:
+            return 0
+
+        stg_schema, stg_table = _parse_table_name(stg_table_name)
+        int_schema, int_table = _parse_table_name(int_table_name)
+        stg_q = f"{_quote_identifier(stg_schema)}.{_quote_identifier(stg_table)}"
+        int_q = (
+            f"{_quote_identifier(int_database)}"
+            f".{_quote_identifier(int_schema)}"
+            f".{_quote_identifier(int_table)}"
+        )
+        join_predicate = " AND ".join(
+            f"stg.{_quote_identifier(k)} = integ.{_quote_identifier(k)}"
+            for k in normalized_keys
+        )
+        key_expr = ", ".join(f"stg.{_quote_identifier(k)}" for k in normalized_keys)
+        sql_text = f"""
+        SELECT COUNT(*) AS n
+        FROM (
+            SELECT DISTINCT {key_expr}
+            FROM {stg_q} AS stg
+            INNER JOIN {int_q} AS integ
+                ON {join_predicate}
+        ) AS conflicts
+        """
+        rows = self.query_rows(sql_text)
+        return int(rows[0]["n"]) if rows else 0
+
     def insert_audit_record(
         self,
         config_id: int,

@@ -24,11 +24,13 @@ Usage (DEV only)
                                            [--dest-schema sharepoint]
                                            [--no-profile]
                                            [--padding 0.20]
+                                           [--csv-mapping-rows]
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import datetime
 import fnmatch
@@ -1028,6 +1030,14 @@ def _safe_suffix_from_file_name(file_name: str) -> str:
     return _snake_case_identifier_fragment(stem, fallback="file")
 
 
+def _call_with_optional_stdout_suppressed(suppress: bool, func, *args, **kwargs):
+    """Call *func*, optionally suppressing stdout from noisy discovery helpers."""
+    if not suppress:
+        return func(*args, **kwargs)
+    with contextlib.redirect_stdout(io.StringIO()):
+        return func(*args, **kwargs)
+
+
 def _print_group_sql(
     *,
     group: _DiscoveryGroup,
@@ -1040,6 +1050,7 @@ def _print_group_sql(
     all_file_names_in_folder: list[str],
     notification_to: str,
     notification_cc: str,
+    csv_mapping_rows_only: bool = False,
 ) -> None:
     archive_folder = f"{folder_server_relative_url}/Processed"
     failed_folder = f"{folder_server_relative_url}/Failed"
@@ -1049,7 +1060,8 @@ def _print_group_sql(
             full_df = pd.concat(group.full_frames, ignore_index=True)
             pk_info = _pk_inference(full_df, group.any_excel, col_raw_types=group.combined_profile)
         except Exception as exc:
-            print(f"    [WARN] PK inference failed for group '{group.group_key}': {exc}")
+            if not csv_mapping_rows_only:
+                print(f"    [WARN] PK inference failed for group '{group.group_key}': {exc}")
             pk_info = _no_pk(0)
     else:
         pk_info = _no_pk(0)
@@ -1067,6 +1079,25 @@ def _print_group_sql(
     else:
         table_basename = f"dest_{folder_safe_name}"
     staging_table = f"{dest_schema}.{table_basename}"
+
+    # Human-readable source object name: folder name with underscores → spaces
+    source_object = folder_name.replace("_", " ").lower()
+    # Object name: table basename without the leading "dest_" prefix
+    object_name = table_basename.removeprefix("dest_")
+
+    if csv_mapping_rows_only:
+        print(
+            _generate_mapping_csv_rows(
+                object_name=object_name,
+                source_object=source_object,
+                data_columns=group.combined_profile,
+                system_columns=sys_cols,
+                pk_columns=pk_cols,
+                padding=padding,
+            ),
+            end="",
+        )
+        return
 
     print(f"\n{'─'*60}")
     print("-- " + "─" * 58)
@@ -1135,27 +1166,6 @@ def _print_group_sql(
             error_notification_email_address=notification_to,
             error_notification_cc_email_address=notification_cc,
         )
-    )
-    print()
-
-    # Human-readable source object name: folder name with underscores → spaces
-    source_object = folder_name.replace("_", " ").lower()
-    # Object name: table basename without the leading "dest_" prefix
-    object_name = table_basename.removeprefix("dest_")
-
-    print("-- " + "─" * 58)
-    print("-- CSV mapping rows (append to existing mapping CSV file)")
-    print("-- " + "─" * 58)
-    print(
-        _generate_mapping_csv_rows(
-            object_name=object_name,
-            source_object=source_object,
-            data_columns=group.combined_profile,
-            system_columns=sys_cols,
-            pk_columns=pk_cols,
-            padding=padding,
-        ),
-        end="",
     )
     print()
 
@@ -1270,16 +1280,21 @@ def discover(
     dest_schema: str = "sharepoint",
     no_profile: bool = False,
     padding: float = 0.20,
+    csv_mapping_rows_only: bool = False,
 ) -> None:
+    def _status(*args, **kwargs) -> None:
+        if not csv_mapping_rows_only:
+            print(*args, **kwargs)
+
     sep = "=" * 70
-    print(sep)
-    print("  SharePoint New Ingestion Discovery Tool")
-    print(sep)
+    _status(sep)
+    _status("  SharePoint New Ingestion Discovery Tool")
+    _status(sep)
 
     # ------------------------------------------------------------------
     # 1. Settings + SQL
     # ------------------------------------------------------------------
-    print(f"\n[1/5] Loading settings (env={env or 'auto'}) …")
+    _status(f"\n[1/5] Loading settings (env={env or 'auto'}) …")
     settings = load_settings(env_override=env)
     _assert_dev_only(getattr(settings, "env_name", ""))
 
@@ -1293,20 +1308,20 @@ def discover(
     # Resolve SQL credentials for credential-based auth modes.
     resolved_sql = _resolve_sql_settings(settings, provider=provider)
 
-    print(f"      SQL:             {resolved_sql.host}/{resolved_sql.database}")
-    print(f"      SharePoint site: {settings.sharepoint.site_url}")
+    _status(f"      SQL:             {resolved_sql.host}/{resolved_sql.database}")
+    _status(f"      SharePoint site: {settings.sharepoint.site_url}")
     sql = SqlClient(resolved_sql)
     sql.test_connection()
-    print("      SQL connection OK.")
+    _status("      SQL connection OK.")
 
     # ------------------------------------------------------------------
     # 2. Existing config rows
     # ------------------------------------------------------------------
-    print("\n[2/5] Loading existing [config].[sharepoint_ingestion] rows …")
+    _status("\n[2/5] Loading existing [config].[sharepoint_ingestion] rows …")
     existing_rows = sql.query_rows(
         "SELECT * FROM [config].[sharepoint_ingestion] ORDER BY id"
     )
-    print(f"      Found {len(existing_rows)} row(s).")
+    _status(f"      Found {len(existing_rows)} row(s).")
 
     site_path = (urlparse(settings.sharepoint.site_url).path or "").rstrip("/")
     configured: set[str] = set()
@@ -1317,7 +1332,7 @@ def discover(
                 site_path,
             )
         )
-    print(f"      Normalized configured folder key(s): {len(configured)}")
+    _status(f"      Normalized configured folder key(s): {len(configured)}")
 
     first = existing_rows[0] if existing_rows else None
     default_base_url = str(first.get("sharepoint_base_url") or "") if first else ""
@@ -1338,23 +1353,27 @@ def discover(
     # ------------------------------------------------------------------
     # 3. SharePoint connection
     # ------------------------------------------------------------------
-    print("\n[3/5] Connecting to SharePoint …")
-    sp, settings = _build_sp_client(settings)
-    print("      Connected.")
-    print(f"      SharePoint site: {settings.sharepoint.site_url}")
+    _status("\n[3/5] Connecting to SharePoint …")
+    sp, settings = _call_with_optional_stdout_suppressed(
+        csv_mapping_rows_only,
+        _build_sp_client,
+        settings,
+    )
+    _status("      Connected.")
+    _status(f"      SharePoint site: {settings.sharepoint.site_url}")
 
     scan_root = base_folder or default_root
     if not scan_root:
-        print("\n[ERROR] Cannot determine SharePoint root folder.  Pass --base-folder.")
+        _status("\n[ERROR] Cannot determine SharePoint root folder.  Pass --base-folder.")
         sys.exit(1)
 
     # ------------------------------------------------------------------
     # 4. Discover new folders (metadata only)
     # ------------------------------------------------------------------
-    print(f"\n[4/5] Listing sub-folders under: {scan_root}")
-    print("      (metadata-only — no file downloads)")
+    _status(f"\n[4/5] Listing sub-folders under: {scan_root}")
+    _status("      (metadata-only — no file downloads)")
     sp_folders = _list_folders_to_depth(sp, scan_root, max_depth=3)
-    print(f"      Found {len(sp_folders)} sub-folder(s) up to depth 3.")
+    _status(f"      Found {len(sp_folders)} sub-folder(s) up to depth 3.")
 
     new_folders = [
         f for f in sp_folders
@@ -1363,45 +1382,47 @@ def discover(
     ]
 
     if not new_folders:
-        print("\n  All folders are already in [config].[sharepoint_ingestion].  Nothing to do.")
+        _status("\n  All folders are already in [config].[sharepoint_ingestion].  Nothing to do.")
         return
 
-    print(f"\n  {len(new_folders)} new (unconfigured) folder(s) found:")
+    _status(f"\n  {len(new_folders)} new (unconfigured) folder(s) found:")
     for f in new_folders:
-        print(f"    - {f.server_relative_url}")
+        _status(f"    - {f.server_relative_url}")
 
     # ------------------------------------------------------------------
     # 5. File count + optional profiling
     # ------------------------------------------------------------------
-    print("\n[5/5] Checking file counts and profiling …")
+    _status("\n[5/5] Checking file counts and profiling …")
 
     for sp_folder in new_folders:
-        print(f"\n  Folder: {sp_folder.server_relative_url}")
+        _status(f"\n  Folder: {sp_folder.server_relative_url}")
         files = sp.list_files(sp_folder.server_relative_url)
-        print(f"    Files found: {len(files)}")
+        _status(f"    Files found: {len(files)}")
 
         if len(files) < 1:
-            print("    SKIP — no files present.")
+            _status("    SKIP — no files present.")
             continue
 
         for fi in files:
-            print(f"      - {fi.name}")
+            _status(f"      - {fi.name}")
 
         folder_name = sp_folder.name
         safe_name = _snake_case_identifier_fragment(folder_name, fallback="folder")
         file_names = [fi.name for fi in files]
         excel_ingest = all(_is_excel(fi.name) for fi in files)
 
-        print(f"\n  {sep}")
-        print(f"  NEW INGESTION CANDIDATE: {folder_name}")
-        print(f"  Folder path:    {sp_folder.server_relative_url}")
-        print(f"  Files:          {len(files)}")
-        print(f"  Type:           {'Excel (all-sheets)' if excel_ingest else 'CSV/Parquet'}")
-        print("  Dest table:     (derived per discovered group)")
-        print(sep)
+        _status(f"\n  {sep}")
+        _status(f"  NEW INGESTION CANDIDATE: {folder_name}")
+        _status(f"  Folder path:    {sp_folder.server_relative_url}")
+        _status(f"  Files:          {len(files)}")
+        _status(f"  Type:           {'Excel (all-sheets)' if excel_ingest else 'CSV/Parquet'}")
+        _status("  Dest table:     (derived per discovered group)")
+        _status(sep)
 
         if no_profile:
-            _print_stub(
+            _call_with_optional_stdout_suppressed(
+                csv_mapping_rows_only,
+                _print_stub,
                 sp_folder=sp_folder,
                 files=files,
                 default_base_url=default_base_url,
@@ -1412,20 +1433,25 @@ def discover(
             )
             continue
 
-        print(f"\n  Profiling {len(files)} file(s) …")
+        _status(f"\n  Profiling {len(files)} file(s) …")
         candidates: list[_ProfileCandidate] = []
         for fi in files:
-            print(f"    Downloading: {fi.name}")
-            cand = _build_profile_candidate(sp, fi)
+            _status(f"    Downloading: {fi.name}")
+            cand = _call_with_optional_stdout_suppressed(
+                csv_mapping_rows_only,
+                _build_profile_candidate,
+                sp,
+                fi,
+            )
             if cand is not None:
                 candidates.append(cand)
 
         if not candidates:
-            print("    [WARN] No usable data found.  Skipping.")
+            _status("    [WARN] No usable data found.  Skipping.")
             continue
 
         groups = _build_discovery_groups(candidates)
-        print(f"    Derived {len(groups)} ingestion recommendation group(s).")
+        _status(f"    Derived {len(groups)} ingestion recommendation group(s).")
         for g in groups:
             _print_group_sql(
                 group=g,
@@ -1438,11 +1464,12 @@ def discover(
                 all_file_names_in_folder=file_names,
                 notification_to=default_notification_to,
                 notification_cc=default_notification_cc,
+                csv_mapping_rows_only=csv_mapping_rows_only,
             )
 
-    print(f"\n{sep}")
-    print("  Discovery complete.")
-    print(sep)
+    _status(f"\n{sep}")
+    _status("  Discovery complete.")
+    _status(sep)
 
 
 def _print_stub(
@@ -1508,6 +1535,13 @@ def _parse(argv=None):
     p.add_argument("--dest-schema", default=_DEFAULT_DEST_SCHEMA, dest="dest_schema")
     p.add_argument("--no-profile", action="store_true", default=False, dest="no_profile")
     p.add_argument("--padding", type=float, default=0.20, dest="padding")
+    p.add_argument(
+        "--csv-mapping-rows",
+        action="store_true",
+        default=False,
+        dest="csv_mapping_rows_only",
+        help="Print only generated CSV mapping rows; omit normal SQL/recommendation output.",
+    )
     return p.parse_args(argv)
 
 
@@ -1519,11 +1553,5 @@ if __name__ == "__main__":
         dest_schema=args.dest_schema,
         no_profile=args.no_profile,
         padding=args.padding,
+        csv_mapping_rows_only=args.csv_mapping_rows_only,
     )
-
-
-
-
-
-
-

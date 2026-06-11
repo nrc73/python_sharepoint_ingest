@@ -34,6 +34,8 @@ from tools.discover_new_ingestion import (
     _generate_mapping_csv_rows,
     _list_folders_to_depth,
     _build_profile_candidate,
+    _parse,
+    _print_group_sql,
     _read_file_sheets,
     _safe_suffix_from_file_name,
     _same_filename_family,
@@ -641,6 +643,66 @@ def test_default_dest_schema_is_sharepoint() -> None:
     assert _DEFAULT_DEST_SCHEMA == "sharepoint"
 
 
+def test_parse_csv_mapping_rows_flag_defaults_false() -> None:
+    args = _parse([])
+
+    assert args.csv_mapping_rows_only is False
+
+
+def test_parse_csv_mapping_rows_flag_enables_mapping_only_output() -> None:
+    args = _parse(["--csv-mapping-rows"])
+
+    assert args.csv_mapping_rows_only is True
+
+
+def _print_group_sql_for_test(*, csv_mapping_rows_only: bool = False) -> None:
+    group = _build_discovery_groups([
+        _candidate("orders.xlsx", cols=("order_id", "amount"), kind="excel")
+    ])[0]
+
+    _print_group_sql(
+        group=group,
+        folder_name="Orders",
+        folder_safe_name="orders",
+        folder_server_relative_url="/sites/dev/Documents/Orders",
+        default_base_url="https://example.sharepoint.com/sites/dev",
+        dest_schema=_DEFAULT_DEST_SCHEMA,
+        padding=0.20,
+        all_file_names_in_folder=["orders.xlsx"],
+        notification_to="ops@example.com",
+        notification_cc="",
+        csv_mapping_rows_only=csv_mapping_rows_only,
+    )
+
+
+def test_print_group_sql_default_omits_csv_mapping_rows(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _print_group_sql_for_test()
+
+    output = capsys.readouterr().out
+    assert "CREATE TABLE" in output
+    assert "INSERT INTO [config].[sharepoint_ingestion]" in output
+    assert "PK Inference Evidence" in output
+    assert "CSV mapping rows" not in output
+    assert ",".join(_MAPPING_CSV_HEADER) not in output
+
+
+def test_print_group_sql_csv_mapping_rows_flag_outputs_only_mapping_rows(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _print_group_sql_for_test(csv_mapping_rows_only=True)
+
+    output = capsys.readouterr().out
+    assert output.startswith(",".join(_MAPPING_CSV_HEADER))
+    assert "orders_orders" in output
+    assert "order_id" in output
+    assert "CREATE TABLE" not in output
+    assert "INSERT INTO [config].[sharepoint_ingestion]" not in output
+    assert "PK Inference Evidence" not in output
+    assert "CSV mapping rows" not in output
+
+
 def test_generate_create_table_uses_sharepoint_schema_and_managed_columns() -> None:
     sql = _generate_create_table(
         schema=_DEFAULT_DEST_SCHEMA,
@@ -919,10 +981,3 @@ def test_discover_passes_resolved_credentials_to_sql_client() -> None:
     assert used.username == "kv_user"
     assert used.password == "kv_pass"
     assert used.database == "ingest_audit_dev"
-
-
-
-
-
-
-

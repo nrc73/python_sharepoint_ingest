@@ -131,6 +131,26 @@ SharePoint file
    - `TRUNCATE` — integrated table is truncated, then all staging rows are inserted.
    - `APPEND` — staging rows are appended to the integrated table (PK violation protection applies).
 
+### Staging-only reload mode
+
+Use `--ingest-stg-only` when source files should be loaded into the configured
+staging table without any staging→integrated promotion:
+
+```powershell
+python -m sharepoint_ingest.main --ingest-stg-only --ingestion-scope real
+```
+
+Operational contract:
+
+- Applies only to non-`TEST` configs. `TEST` configs keep the normal staging→integrated path even when the flag is supplied.
+- Requires `staging_table_name` to be populated and present in the staging database; the runner fails fast and never falls back to `integrated_table_name`.
+- Ignores integrated-table existence/metadata for non-`TEST` staging-only runs.
+- Forces a strict staging truncate/reload: the first selected file/chunk truncates the staging table, then later chunks/files in the same config run append to complete the reload set.
+- Schema/type validation uses staging table metadata. Validation warnings still notify and allow the load; blocking validation errors fail the file.
+- Duplicate-key prechecks use the staging table primary key only. Existing rows in staging/integrated are not conflict-checked because the staging table is reloaded.
+- Successful files are still moved to the configured processed/archive folder, and failures still use the normal failed-folder and email notification paths.
+- Audit rows record the actual destination database/table, e.g. `ingest_stg_dev.sharepoint.dest_customers`.
+
 ---
 
 ## Key Vault secrets
@@ -171,7 +191,7 @@ Key columns after the v2 schema update:
 |---|---|---|
 | `staging_table_name` | `VARCHAR(200)` | Fully-qualified stg table, e.g. `staging.dest_customers` |
 | `integrated_table_name` | `VARCHAR(200)` | Fully-qualified int table (usually same name, different DB) |
-| `load_strategy` | `VARCHAR(30)` | `TRUNCATE` or `APPEND` — controls int promotion step |
+| `load_strategy` | `VARCHAR(30)` | `TRUNCATE` or `APPEND` — controls int promotion step; ignored by non-`TEST` `--ingest-stg-only`, which always reloads staging |
 | `to_email_address` | `VARCHAR(400)` | Primary notification recipient |
 | `cc_email_address` | `VARCHAR(400)` | CC notification recipients |
 
@@ -278,15 +298,19 @@ python tools\validate_prod_guardrails.py --env prod
 
 This command exits non-zero when test/sample config rows are present in prod.
 
-6) Apply sample artifact config scripts in DEV only
+6) Reset and prepare DEV sample artifact setup
 
 ```powershell
-python sharepoint_setup\bootstrap_sql_schema.py --env dev --script sql/setup_ingest_dev_valid_artifacts.sql
-python sharepoint_setup\bootstrap_sql_schema.py --env dev --script sql/setup_ingest_dev_invalid_artifacts.sql
+python sharepoint_setup\bootstrap_sql_schema.py --env dev --script sql\reset_and_prepare_dev_v2.sql
 ```
 
-Both scripts now fail fast if executed against any database other than
-`ingest_dev`.
+This DEV-only reset script targets the current three-database model:
+
+- `ingest_audit_dev` — clears `log.sharepoint_ingestion_audit`, resets TEST config rows
+- `ingest_stg_dev` — recreates `sharepoint.dest_*` staging tables
+- `ingest_int_dev` — recreates `sharepoint.dest_*` integrated tables
+
+The retired single-database `ingest_dev` artifact setup scripts have been removed.
 
 ### DEV-only discovery helper
 

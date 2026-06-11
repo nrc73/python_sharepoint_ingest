@@ -1,6 +1,7 @@
 """Diagnose which tables exist and whether is_validated column is present."""
 from __future__ import annotations
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +13,7 @@ from sharepoint_ingest.config import load_settings
 from sharepoint_ingest.sql_client import SqlClient
 
 settings = load_settings(env_override="dev")
-sql = SqlClient(settings.sql)
+sql = SqlClient(replace(settings.sql, database="ingest_int_dev"))
 
 with sql._engine.connect() as conn:
     # 1. Check what tables exist in config schema

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from collections import Counter
+import logging
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Iterable, Optional
 
 from sharepoint_ingest.config import EmailSettings
+
+
+logger = logging.getLogger(__name__)
 
 
 class EmailNotifier:
@@ -62,12 +66,21 @@ class EmailNotifier:
 
         all_recipients = [*to_recipients, *cc_recipients]
 
-        with smtplib.SMTP(self._settings.host, self._settings.port) as smtp:
-            if self._settings.use_tls:
-                smtp.starttls()
-            if self._settings.username and self._settings.password:
-                smtp.login(self._settings.username, self._settings.password)
-            smtp.send_message(msg, to_addrs=all_recipients)
+        try:
+            with smtplib.SMTP(self._settings.host, self._settings.port) as smtp:
+                if self._settings.use_tls:
+                    smtp.starttls()
+                if self._settings.username and self._settings.password:
+                    smtp.login(self._settings.username, self._settings.password)
+                smtp.send_message(msg, to_addrs=all_recipients)
+        except (OSError, smtplib.SMTPException) as exc:
+            logger.warning(
+                "Email notification could not be sent via %s:%s: %s",
+                self._settings.host,
+                self._settings.port,
+                exc,
+            )
+            return False
         return True
 
 

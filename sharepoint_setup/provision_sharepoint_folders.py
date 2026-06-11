@@ -141,7 +141,6 @@ def _build_folder_specs(site_path: str, library_name: str) -> list[FolderSpec]:
     base = f"{site_path}/{library_name}".rstrip("/")
     groups = [
         "valid_customers",
-        "valid_ole2_excel",
         "valid_transactions",
         "valid_parquet",
         "valid_transactions_large",

@@ -47,6 +47,9 @@ It is intended as a single handoff artifact for external documentation and opera
 
 - Validation issue lists are aggregated and sent via `build_validation_email_body`.
 - If blocking errors exist, the run fails and a failure audit record is written.
+- With `--ingest-stg-only`, source-vs-destination checks compare against the
+  configured staging table metadata. Integrated-table metadata is intentionally
+  ignored for non-`TEST` staging-only runs.
 
 ---
 
@@ -67,6 +70,8 @@ It is intended as a single handoff artifact for external documentation and opera
 5. Wrong destination table name / metadata lookup failures
 6. Incomplete credentials (SharePoint or SQL)
 7. Missing/incorrect `merge_key_columns` for APPEND duplicate-detection intent
+8. In `--ingest-stg-only`, blank or missing `staging_table_name` fails before
+   file discovery/download. `integrated_table_name` is not used as a fallback.
 
 ### Notification behavior
 
@@ -92,12 +97,37 @@ It is intended as a single handoff artifact for external documentation and opera
 2. **Database constraint safety net**
    - If DB rejects append due to PK/unique constraint, `append_load` catches `IntegrityError` and re-raises as `PRIMARY_KEY_VIOLATION`.
 
+3. **Staging-only reload duplicate detection**
+   - For non-`TEST` `--ingest-stg-only`, duplicate prechecks use the staging
+     table primary key columns only.
+   - Existing rows in staging/integrated are not conflict-checked because the
+     staging destination is truncated/reloaded for the run.
+
 ### Notification behavior
 
 - PK-specific subject/body via `build_pk_violation_email_body`.
 - Includes table, key columns, duplicate count/sample values (when available), and remediation options:
   - FULL RELOAD
   - MANUAL CLEAN
+
+---
+
+## 4.1) `--ingest-stg-only` operational behavior
+
+`python -m sharepoint_ingest.main --ingest-stg-only` is a non-`TEST` staging
+reload mode. It loads CSV, Excel, and Parquet data into the configured staging
+database/table only and skips staging→integrated promotion.
+
+Validation and notification behavior remains the same where possible:
+
+- config table, SharePoint path, schema/type, data conversion, primary-key, and
+  SQL load failures still write audit records and use the normal notification
+  paths;
+- validation warning emails still send without blocking the load;
+- audit and notification context identifies the actual destination database and
+  table;
+- `TEST` scope is explicitly excluded and continues to run the normal promotion
+  path.
 
 ---
 

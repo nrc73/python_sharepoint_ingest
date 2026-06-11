@@ -142,63 +142,16 @@ def generate_valid_excel_files(valid_excel_dir: Path) -> None:
             _apply_signup_date_number_format(writer, "Customers_AU", "d/mm/yyyy;@")
             _apply_signup_date_number_format(writer, "Customers_US", "m/d/yyyy;@")
 
-    generate_valid_ole2_excel_file(valid_excel_dir)
-
-
-def generate_valid_ole2_excel_file(valid_excel_dir: Path) -> None:
-    """Create a valid legacy BIFF/OLE2 Excel workbook with an honest ``.xls`` extension.
-
-    This artifact exercises the OLE2/xlrd read path without disguising the file
-    as OOXML.  Mis-labelled OLE2 ``.xlsx`` files are still covered by unit tests
-    because production can receive them, but the dev sample workflow now uses a
-    truthful legacy Excel extension.
-    """
-    try:
-        import xlwt
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "Generating the OLE2 .xls artifact requires xlwt. "
-            "Install dev dependencies with: python -m pip install -e .[dev]"
-        ) from exc
-
-    legacy_mislabelled_path = valid_excel_dir / "valid_legacy_xls_saved_as_xlsx_001.xlsx"
-    if legacy_mislabelled_path.exists():
-        legacy_mislabelled_path.unlink()
-
-    file_path = valid_excel_dir / "valid_ole2_customers_001.xls"
-    workbook = xlwt.Workbook()
-    worksheet = workbook.add_sheet("Customers_OLE2")
-    date_style = xlwt.easyxf(num_format_str="YYYY-MM-DD")
-    money_style = xlwt.easyxf(num_format_str="0.00")
-
-    headers = [
-        "CustomerId",
-        "CustomerName",
-        "SignupDate",
-        "CreditLimit",
-        "IsActive",
-        "RegionCode",
-        "SourceSystem",
-    ]
-    rows = [
-        ["CUST90001", "OLE2 Customer 1", datetime(2025, 2, 1), 2500.00, "Y", "AU", "OLE2_XLS"],
-        ["CUST90002", "OLE2 Customer 2", datetime(2025, 2, 2), 3750.50, "Y", "US", "OLE2_XLS"],
-        ["CUST90003", "OLE2 Customer 3", datetime(2025, 2, 3), 1800.25, "N", "NZ", "OLE2_XLS"],
-    ]
-
-    for col_idx, header in enumerate(headers):
-        worksheet.write(0, col_idx, header)
-
-    for row_idx, row in enumerate(rows, start=1):
-        for col_idx, value in enumerate(row):
-            if headers[col_idx] == "SignupDate":
-                worksheet.write(row_idx, col_idx, value, date_style)
-            elif headers[col_idx] == "CreditLimit":
-                worksheet.write(row_idx, col_idx, value, money_style)
-            else:
-                worksheet.write(row_idx, col_idx, value)
-
-    workbook.save(str(file_path))
+    # OLE2/BIFF .xls artifacts are intentionally excluded from the live
+    # generated E2E artifact set. Parser-level OLE2 coverage remains in unit
+    # tests because production may still receive legacy or mislabelled files.
+    for stale_name in (
+        "valid_ole2_customers_001.xls",
+        "valid_legacy_xls_saved_as_xlsx_001.xlsx",
+    ):
+        stale_path = valid_excel_dir / stale_name
+        if stale_path.exists():
+            stale_path.unlink()
 
 
 def generate_valid_csv_files(valid_csv_dir: Path) -> None:

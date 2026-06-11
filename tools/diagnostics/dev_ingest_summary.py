@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -13,7 +14,8 @@ from sharepoint_ingest.sql_client import SqlClient
 
 def main() -> int:
     settings = load_settings(env_override="dev")
-    sql = SqlClient(settings.sql)
+    aud_sql = SqlClient(replace(settings.sql, database="ingest_audit_dev"))
+    int_sql = SqlClient(replace(settings.sql, database="ingest_int_dev"))
 
     checks = {
         "dest_customers": "SELECT COUNT(1) AS cnt FROM sharepoint.dest_customers",
@@ -29,10 +31,11 @@ def main() -> int:
     }
 
     for key, query in checks.items():
+        sql = aud_sql if key.startswith("audit_") else int_sql
         rows = sql.query_rows(query)
         print(f"{key}|{rows[0]['cnt']}")
 
-    rows = sql.query_rows(
+    rows = aud_sql.query_rows(
         """
         SELECT workflow_id, status, COUNT(1) AS cnt
         FROM log.sharepoint_ingestion_audit
@@ -43,9 +46,23 @@ def main() -> int:
     for row in rows:
         print(f"audit_by_workflow|{row['workflow_id']}|{row['status']}|{row['cnt']}")
 
+    rows = aud_sql.query_rows(
+        """
+        SELECT workflow_id, file_name, status, records_loaded, validation_error_count, message
+        FROM log.sharepoint_ingestion_audit
+        ORDER BY audit_id
+        """
+    )
+    for row in rows:
+        message = str(row.get("message") or "").replace("\r", " ").replace("\n", " ")[:300]
+        print(
+            "audit_detail|"
+            f"{row['workflow_id']}|{row['file_name']}|{row['status']}|"
+            f"rows={row['records_loaded']}|errors={row['validation_error_count']}|{message}"
+        )
+
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

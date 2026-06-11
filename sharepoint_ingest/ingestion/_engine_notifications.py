@@ -41,6 +41,7 @@ def notify_failure(
     rows_scanned: Optional[int] = None,
     memory_peak_mb: Optional[float] = None,
     duration_seconds: Optional[float] = None,
+    destination_context: Optional[str] = None,
     logger: logging.Logger,
 ) -> None:
     """Build and send a generic ingestion-failure notification email."""
@@ -49,6 +50,8 @@ def notify_failure(
         f"config_id={config.id}, workflow_id={config.workflow_id}, "
         f"process_id={config.process_id}, env={env_name}"
     )
+    if destination_context:
+        process_name = f"{process_name}, {destination_context}"
     body = build_failure_email_body(
         process_name=process_name,
         error_message=error_message,
@@ -77,6 +80,7 @@ def notify_pk_violation(
     rows_scanned: Optional[int] = None,
     memory_peak_mb: Optional[float] = None,
     duration_seconds: Optional[float] = None,
+    destination_context: Optional[str] = None,
     logger: logging.Logger,
 ) -> None:
     """Build and send a targeted PRIMARY KEY VIOLATION notification email.
@@ -89,6 +93,8 @@ def notify_pk_violation(
         f"config_id={config.id}, workflow_id={config.workflow_id}, "
         f"process_id={config.process_id}, env={env_name}"
     )
+    if destination_context:
+        process_name = f"{process_name}, {destination_context}"
 
     key_columns: list[str] = []
     if config.merge_key_columns:
@@ -112,7 +118,7 @@ def notify_pk_violation(
         process_name=process_name,
         error_message=error_message,
         file_name=file_name,
-        table_name=config.staging_table_name,
+        table_name=destination_context or config.staging_table_name,
         key_columns=key_columns or None,
         duplicate_count=duplicate_count,
         sample_values=sample_values,
@@ -138,12 +144,21 @@ def publish_and_notify_issues(
     issues: "list[ValidationIssue]",
     notifier,
     logger: logging.Logger,
+    *,
+    destination_context: Optional[str] = None,
 ) -> None:
     """Log every validation issue and send a validation notification email."""
     issue_strings = [format_issue(i) for i in issues]
     for issue_str in issue_strings:
         logger.warning("Config id=%s validation: %s", config.id, issue_str)
-    _send_validation_notification(notifier, config, issue_strings, issues=issues, logger=logger)
+    _send_validation_notification(
+        notifier,
+        config,
+        issue_strings,
+        issues=issues,
+        logger=logger,
+        destination_context=destination_context,
+    )
 
 
 def _send_validation_notification(
@@ -153,6 +168,7 @@ def _send_validation_notification(
     *,
     issues: "Optional[list[ValidationIssue]]" = None,
     logger: logging.Logger,
+    destination_context: Optional[str] = None,
 ) -> None:
     """Assemble and dispatch the validation-warning email."""
     subject = f"SharePoint ingestion validation warning - config {config.id}"
@@ -170,7 +186,10 @@ def _send_validation_notification(
         source_file_name = file_match.group(1).strip().strip("\"'")
 
     body = build_validation_email_body(
-        process_name=f"config_id={config.id}, workflow_id={config.workflow_id}",
+        process_name=(
+            f"config_id={config.id}, workflow_id={config.workflow_id}"
+            + (f", {destination_context}" if destination_context else "")
+        ),
         issues=issue_messages,
         file_name=source_file_name,
         sheet_name=sheet_name,

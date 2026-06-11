@@ -141,27 +141,99 @@ class IngestionEngine:
             return self.int_sql_client._settings.database
         return None
 
-    def _audit_destination_database(self, config: "IngestionConfig") -> Optional[str]:
-        """Return the database name that will ultimately hold the data.
-
-        Prefers the integrated DB when configured (that is where the final promoted
-        data lives); falls back to the staging DB name.  Returns ``None`` when the
-        client does not expose ``_settings`` (e.g. test doubles).
-        """
-        if self._int_database:
-            return self._int_database
+    @property
+    def _stg_database(self) -> Optional[str]:
+        """Return the staging DB name, or None when the client is a test double."""
         try:
             return self._stg_client._settings.database
         except AttributeError:
             return None
 
-    def _audit_destination_table(self, config: "IngestionConfig") -> Optional[str]:
+    @staticmethod
+    def _normalized_config_scope(config: "IngestionConfig") -> str:
+        scope = str(config.ingestion_scope or "").strip().upper()
+        if not scope:
+            scope = "TEST" if config.test_data_enabled else "REAL"
+        return scope
+
+    def _effective_stg_only(self, config: "IngestionConfig", ingest_stg_only: bool) -> bool:
+        """Return whether staging-only mode applies to this config.
+
+        TEST-scope configs intentionally keep the normal staging→integrated path
+        even when the CLI flag is supplied.
+        """
+        return bool(ingest_stg_only) and self._normalized_config_scope(config) != "TEST"
+
+    def _audit_destination_database(
+        self, config: "IngestionConfig", *, ingest_stg_only: bool = False
+    ) -> Optional[str]:
+        """Return the database name that will ultimately hold the data.
+
+        In staging-only mode this is the stg DB.  Otherwise it prefers the
+        integrated DB when configured (that is where the final promoted data
+        lives); falls back to the staging DB name.  Returns ``None`` when the
+        client does not expose ``_settings`` (e.g. test doubles).
+        """
+        if self._effective_stg_only(config, ingest_stg_only):
+            return self._stg_database
+        if self._int_database:
+            return self._int_database
+        return self._stg_database
+
+    def _audit_destination_table(
+        self, config: "IngestionConfig", *, ingest_stg_only: bool = False
+    ) -> Optional[str]:
         """Return the fully-qualified table name that will ultimately hold the data.
 
-        Prefers ``integrated_table_name`` when set; falls back to ``staging_table_name``.
+        In staging-only mode this is always ``staging_table_name``.  Otherwise it
+        prefers ``integrated_table_name`` when set; falls back to
+        ``staging_table_name``.
         """
+        if self._effective_stg_only(config, ingest_stg_only):
+            return config.staging_table_name
         int_table = (config.integrated_table_name or "").strip()
         return int_table if int_table else config.staging_table_name
+
+    def _destination_context(
+        self, config: "IngestionConfig", *, ingest_stg_only: bool = False
+    ) -> str:
+        database = self._audit_destination_database(config, ingest_stg_only=ingest_stg_only) or "unknown-db"
+        table = self._audit_destination_table(config, ingest_stg_only=ingest_stg_only) or "unknown-table"
+        return f"destination={database}.{table}"
+
+    def _staging_primary_key_columns(self, config: "IngestionConfig") -> list[str]:
+        """Return primary-key columns from the configured staging table only."""
+        try:
+            return [
+                str(c).strip()
+                for c in self._stg_client.get_primary_key_columns(config.staging_table_name)
+                if str(c).strip()
+            ]
+        except Exception:
+            self.logger.warning(
+                "Config id=%s could not read primary key metadata for staging table '%s'",
+                config.id,
+                config.staging_table_name,
+                exc_info=True,
+            )
+            return []
+
+    def _validate_staging_only_destination(self, config: "IngestionConfig") -> None:
+        """Fail fast when staging-only mode cannot resolve its staging target."""
+        stg_table = (config.staging_table_name or "").strip()
+        if not stg_table:
+            raise ValueError(
+                f"Config id={config.id} has blank staging_table_name; "
+                "--ingest-stg-only requires a populated staging destination and "
+                "does not fall back to integrated_table_name."
+            )
+
+        columns = self._stg_client.get_table_columns(stg_table)
+        if not columns:
+            raise ValueError(
+                f"Config id={config.id} staging table '{stg_table}' was not found "
+                "in the staging database or has no columns."
+            )
 
     def _promote_stg_to_int(self, config: "IngestionConfig") -> None:
         """Copy all rows from staging → integrated table after a successful stg load.
@@ -176,7 +248,8 @@ class IngestionEngine:
         if not int_table:
             return
 
-        load_strategy = (config.load_strategy or "TRUNCATE").upper()
+        load_strategy = self._resolve_load_strategy(config.load_strategy)
+        self._validate_integrated_promotion_keys(config, int_table, load_strategy)
         self.logger.info(
             "Config id=%s  promoting stg→int  stg=%s  int=%s/%s  strategy=%s",
             config.id,
@@ -198,6 +271,56 @@ class IngestionEngine:
             self._int_database,
             int_table,
         )
+
+    def _validate_integrated_promotion_keys(
+        self, config: "IngestionConfig", int_table: str, load_strategy: str
+    ) -> None:
+        """Best-effort PK validation before staging→integrated promotion.
+
+        Staging loads are validated before each write.  This additional guard
+        catches duplicate keys in the full staged set, and APPEND conflicts with
+        the integrated table, before SQL Server raises a less actionable insert
+        failure during promotion.
+        """
+        if not hasattr(self._stg_client, "count_duplicate_keys"):
+            return
+
+        key_columns = [c.strip() for c in (config.merge_key_columns or "").split(",") if c.strip()]
+        if not key_columns:
+            try:
+                if hasattr(self._stg_client, "get_primary_key_columns_in_database") and self._int_database:
+                    key_columns = self._stg_client.get_primary_key_columns_in_database(self._int_database, int_table)
+                if not key_columns:
+                    key_columns = self._stg_client.get_primary_key_columns(config.staging_table_name)
+            except Exception:
+                key_columns = []
+
+        if not key_columns:
+            return
+
+        duplicate_count = int(self._stg_client.count_duplicate_keys(config.staging_table_name, key_columns) or 0)
+        if duplicate_count:
+            raise ValueError(
+                f"PRIMARY_KEY_VIOLATION: Staging table '{config.staging_table_name}' contains "
+                f"{duplicate_count} duplicate key group(s) on key column(s) {key_columns}; cannot promote "
+                f"to integrated table '{self._int_database}.{int_table}'."
+            )
+
+        if load_strategy != "APPEND" or not hasattr(self._stg_client, "count_key_conflicts_with_int"):
+            return
+
+        conflict_count = int(
+            self._stg_client.count_key_conflicts_with_int(
+                config.staging_table_name, self._int_database, int_table, key_columns
+            )
+            or 0
+        )
+        if conflict_count:
+            raise ValueError(
+                f"PRIMARY_KEY_VIOLATION: Staging table '{config.staging_table_name}' contains "
+                f"{conflict_count} key value(s) that already exist in integrated table "
+                f"'{self._int_database}.{int_table}' on key column(s) {key_columns}."
+            )
 
     # ── per-file telemetry ────────────────────────────────────────────────────
 
@@ -353,6 +476,7 @@ class IngestionEngine:
         workflow_id: Optional[str] = None,
         ingestion_scope: Optional[str] = "real",
         include_inactive: bool = False,
+        ingest_stg_only: bool = False,
     ) -> IngestionSummary:
         configs = self.sql_client.fetch_ingestion_configs(
             process_id=process_id,
@@ -364,17 +488,73 @@ class IngestionEngine:
         summary = IngestionSummary(process_id=process_id, workflow_id=workflow_id)
         self.logger.info("Loaded %s ingestion config row(s)", len(configs))
         for config in configs:
-            result = self._process_config(config)
+            result = self._process_config(config, ingest_stg_only=ingest_stg_only)
             summary.files_processed += result.files_processed
             summary.files_failed += result.files_failed
             summary.rows_loaded += result.rows_loaded
             summary.errors.extend(result.errors)
         return summary
 
-    def _process_config(self, config: IngestionConfig) -> ProcessResult:
-        self.logger.info("Starting config id=%s workflow=%s", config.id, config.workflow_id)
+    def _process_config(
+        self, config: IngestionConfig, *, ingest_stg_only: bool = False
+    ) -> ProcessResult:
+        effective_stg_only = self._effective_stg_only(config, ingest_stg_only)
+        self.logger.info(
+            "Starting config id=%s workflow=%s %s",
+            config.id,
+            config.workflow_id,
+            self._destination_context(config, ingest_stg_only=ingest_stg_only),
+        )
 
         result = ProcessResult(config_id=config.id)
+
+        if effective_stg_only:
+            try:
+                self._validate_staging_only_destination(config)
+            except Exception as exc:
+                err = f"Config {config.id} staging-only destination validation failed: {exc}"
+                self.logger.exception(err)
+                result.errors.append(err)
+                result.files_failed += 1
+                try:
+                    self.sql_client.insert_audit_record(
+                        config_id=config.id,
+                        workflow_id=config.workflow_id,
+                        process_id=config.process_id,
+                        file_name=None,
+                        status="FAILED",
+                        records_loaded=0,
+                        message=err,
+                        rows_scanned=0,
+                        validation_error_count=0,
+                        memory_peak_mb=self._capture_memory_peak_mb(),
+                        duration_seconds=0,
+                        ingestion_scope=config.ingestion_scope,
+                        is_test_data=config.test_data_enabled,
+                        destination_database=self._audit_destination_database(
+                            config, ingest_stg_only=ingest_stg_only
+                        ),
+                        destination_table=self._audit_destination_table(
+                            config, ingest_stg_only=ingest_stg_only
+                        ),
+                    )
+                except Exception:
+                    self.logger.warning(
+                        "Config id=%s could not create FAILED audit row for staging-only validation",
+                        config.id,
+                        exc_info=True,
+                    )
+                self._notify_failure(
+                    config,
+                    err,
+                    file_name=None,
+                    rows_scanned=0,
+                    memory_peak_mb=self._capture_memory_peak_mb(),
+                    duration_seconds=0,
+                    ingest_stg_only=ingest_stg_only,
+                )
+                return result
+
         pattern = config.file_name_pattern or self.settings.default_file_pattern or "*"
         process_folder = self._resolve_sharepoint_folder(config.sharepoint_process_folder)
         archive_folder = self._resolve_sharepoint_folder(config.sharepoint_process_archive_folder)
@@ -432,7 +612,7 @@ class IngestionEngine:
 
         force_append_for_selected_files = len(matching_files) > 1
 
-        for item in matching_files:
+        for file_index, item in enumerate(matching_files):
             self._reset_file_telemetry()
             started = time.perf_counter()
             self._capture_memory_peak_mb()
@@ -453,8 +633,12 @@ class IngestionEngine:
                     duration_seconds=None,
                     ingestion_scope=config.ingestion_scope,
                     is_test_data=config.test_data_enabled,
-                    destination_database=self._audit_destination_database(config),
-                    destination_table=self._audit_destination_table(config),
+                    destination_database=self._audit_destination_database(
+                        config, ingest_stg_only=ingest_stg_only
+                    ),
+                    destination_table=self._audit_destination_table(
+                        config, ingest_stg_only=ingest_stg_only
+                    ),
                 )
             except Exception:
                 self.logger.warning(
@@ -465,13 +649,17 @@ class IngestionEngine:
                 )
 
             try:
+                force_append_for_file = (
+                    file_index > 0 if effective_stg_only else force_append_for_selected_files
+                )
                 row_count = self._process_single_file(
                     config,
                     item.server_relative_url,
                     item.name,
                     archive_folder=archive_folder,
-                    force_append=force_append_for_selected_files,
+                    force_append=force_append_for_file,
                     audit_id=audit_id,
+                    ingest_stg_only=ingest_stg_only,
                 )
                 result.files_processed += 1
                 result.rows_loaded += row_count
@@ -488,8 +676,12 @@ class IngestionEngine:
                         duration_seconds=round(time.perf_counter() - started, 2),
                         ingestion_scope=config.ingestion_scope,
                         is_test_data=config.test_data_enabled,
-                        destination_database=self._audit_destination_database(config),
-                        destination_table=self._audit_destination_table(config),
+                        destination_database=self._audit_destination_database(
+                            config, ingest_stg_only=ingest_stg_only
+                        ),
+                        destination_table=self._audit_destination_table(
+                            config, ingest_stg_only=ingest_stg_only
+                        ),
                     )
                     if not updated:
                         self.sql_client.insert_audit_record(
@@ -506,8 +698,12 @@ class IngestionEngine:
                             duration_seconds=round(time.perf_counter() - started, 2),
                             ingestion_scope=config.ingestion_scope,
                             is_test_data=config.test_data_enabled,
-                            destination_database=self._audit_destination_database(config),
-                            destination_table=self._audit_destination_table(config),
+                            destination_database=self._audit_destination_database(
+                                config, ingest_stg_only=ingest_stg_only
+                            ),
+                            destination_table=self._audit_destination_table(
+                                config, ingest_stg_only=ingest_stg_only
+                            ),
                         )
                 else:
                     self.sql_client.insert_audit_record(
@@ -524,8 +720,12 @@ class IngestionEngine:
                         duration_seconds=round(time.perf_counter() - started, 2),
                         ingestion_scope=config.ingestion_scope,
                         is_test_data=config.test_data_enabled,
-                        destination_database=self._audit_destination_database(config),
-                        destination_table=self._audit_destination_table(config),
+                        destination_database=self._audit_destination_database(
+                            config, ingest_stg_only=ingest_stg_only
+                        ),
+                        destination_table=self._audit_destination_table(
+                            config, ingest_stg_only=ingest_stg_only
+                        ),
                     )
             except Exception as exc:  # pragma: no cover - integration path
                 err = f"Config {config.id} failed for file {item.name}: {exc}"
@@ -545,8 +745,12 @@ class IngestionEngine:
                         duration_seconds=round(time.perf_counter() - started, 2),
                         ingestion_scope=config.ingestion_scope,
                         is_test_data=config.test_data_enabled,
-                        destination_database=self._audit_destination_database(config),
-                        destination_table=self._audit_destination_table(config),
+                        destination_database=self._audit_destination_database(
+                            config, ingest_stg_only=ingest_stg_only
+                        ),
+                        destination_table=self._audit_destination_table(
+                            config, ingest_stg_only=ingest_stg_only
+                        ),
                     )
                     if not updated:
                         self.sql_client.insert_audit_record(
@@ -563,8 +767,12 @@ class IngestionEngine:
                             duration_seconds=round(time.perf_counter() - started, 2),
                             ingestion_scope=config.ingestion_scope,
                             is_test_data=config.test_data_enabled,
-                            destination_database=self._audit_destination_database(config),
-                            destination_table=self._audit_destination_table(config),
+                            destination_database=self._audit_destination_database(
+                                config, ingest_stg_only=ingest_stg_only
+                            ),
+                            destination_table=self._audit_destination_table(
+                                config, ingest_stg_only=ingest_stg_only
+                            ),
                         )
                 else:
                     self.sql_client.insert_audit_record(
@@ -581,8 +789,12 @@ class IngestionEngine:
                         duration_seconds=round(time.perf_counter() - started, 2),
                         ingestion_scope=config.ingestion_scope,
                         is_test_data=config.test_data_enabled,
-                        destination_database=self._audit_destination_database(config),
-                        destination_table=self._audit_destination_table(config),
+                        destination_database=self._audit_destination_database(
+                            config, ingest_stg_only=ingest_stg_only
+                        ),
+                        destination_table=self._audit_destination_table(
+                            config, ingest_stg_only=ingest_stg_only
+                        ),
                     )
                 if failed_folder:
                     try:
@@ -601,6 +813,7 @@ class IngestionEngine:
                         rows_scanned=self._last_file_rows_scanned,
                         memory_peak_mb=self._capture_memory_peak_mb(),
                         duration_seconds=round(time.perf_counter() - started, 2),
+                        ingest_stg_only=ingest_stg_only,
                     )
                 else:
                     self._notify_failure(
@@ -608,13 +821,14 @@ class IngestionEngine:
                         rows_scanned=self._last_file_rows_scanned,
                         memory_peak_mb=self._capture_memory_peak_mb(),
                         duration_seconds=round(time.perf_counter() - started, 2),
+                        ingest_stg_only=ingest_stg_only,
                     )
 
         # ── staging → integrated promotion ────────────────────────────────────
         # After all files for this config have been loaded into the stg DB, promote
         # them to the int DB using the configured load_strategy.  Skip when no files
         # were processed or any file failed (to avoid promoting stale/partial data).
-        if result.files_processed > 0 and result.files_failed == 0:
+        if result.files_processed > 0 and result.files_failed == 0 and not effective_stg_only:
             try:
                 self._promote_stg_to_int(config)
             except Exception as exc:  # pragma: no cover - integration path
@@ -634,13 +848,17 @@ class IngestionEngine:
         archive_folder: Optional[str] = None,
         force_append: bool = False,
         audit_id: Optional[int] = None,
+        ingest_stg_only: bool = False,
     ) -> int:
         lower_name = file_name.lower()
         source_kind = self._resolve_source_kind(file_name)
         destination_columns = self._stg_client.get_table_columns(config.staging_table_name)
-        resolved_load_strategy = self._resolve_load_strategy(
-            config.load_strategy, force_append=force_append
-        )
+        if self._effective_stg_only(config, ingest_stg_only):
+            resolved_load_strategy = "APPEND" if force_append else "TRUNCATE"
+        else:
+            resolved_load_strategy = self._resolve_load_strategy(
+                config.load_strategy, force_append=force_append
+            )
         self._capture_memory_peak_mb()
 
         if lower_name.endswith(".csv") and self.settings.enable_chunked_csv:
@@ -649,6 +867,7 @@ class IngestionEngine:
                 archive_folder=archive_folder,
                 load_strategy=resolved_load_strategy,
                 audit_id=audit_id,
+                ingest_stg_only=ingest_stg_only,
             )
 
         if lower_name.endswith(".parquet") and getattr(
@@ -659,6 +878,7 @@ class IngestionEngine:
                 archive_folder=archive_folder,
                 load_strategy=resolved_load_strategy,
                 audit_id=audit_id,
+                ingest_stg_only=ingest_stg_only,
             )
 
         if source_kind == "excel" and self._graph_excel_extraction_mode() == "cloud_excel_only":
@@ -715,11 +935,19 @@ class IngestionEngine:
                 config, dataframe,
                 destination_columns=destination_columns,
                 precomputed_issues=precheck_issues,
+                ingest_stg_only=ingest_stg_only,
             )
         elif precheck_issues:
-            self._publish_validation_issues(config, precheck_issues)
+            self._publish_validation_issues(
+                config, precheck_issues, ingest_stg_only=ingest_stg_only
+            )
 
-        self._check_for_intra_file_duplicate_keys(dataframe, config, resolved_load_strategy)
+        self._check_for_intra_file_duplicate_keys(
+            dataframe,
+            config,
+            resolved_load_strategy,
+            enforce_for_truncate=self._effective_stg_only(config, ingest_stg_only),
+        )
         self._load_dataframe(config, dataframe, load_strategy=resolved_load_strategy)
         self._log_sql_ingestion_progress(
             processed_rows=len(dataframe),
@@ -746,6 +974,7 @@ class IngestionEngine:
         archive_folder: Optional[str] = None,
         load_strategy: Optional[str] = None,
         audit_id: Optional[int] = None,
+        ingest_stg_only: bool = False,
     ) -> int:
         buffer = self.sharepoint_client.download_file_to_buffer(server_relative_url)
         self._capture_memory_peak_mb()
@@ -770,11 +999,15 @@ class IngestionEngine:
         except Exception:
             total_buffer_bytes = 1
 
-        # ── Streaming duplicate-key tracker for APPEND mode ──────────────────
+        enforce_truncate_keys = self._effective_stg_only(config, ingest_stg_only)
+
+        # ── Streaming duplicate-key tracker for APPEND/staging-only mode ─────
         # Resolve merge keys once so we can detect cross-chunk duplicates.
         seen_key_tuples: set[tuple] = set()
         append_key_columns: list[str] = []
-        if resolved_load_strategy == "APPEND":
+        if enforce_truncate_keys:
+            append_key_columns = self._staging_primary_key_columns(config)
+        elif resolved_load_strategy == "APPEND":
             try:
                 append_key_columns = self._resolve_merge_keys(config)
             except Exception:
@@ -830,13 +1063,15 @@ class IngestionEngine:
                     i for i in aggregated_issues if i.severity.upper() == "ERROR"
                 ]
                 if blocking_errors:
-                    self._publish_validation_issues(config, aggregated_issues)
+                    self._publish_validation_issues(
+                        config, aggregated_issues, ingest_stg_only=ingest_stg_only
+                    )
                     self._set_validation_error_count(len(blocking_errors))
                     formatted = "; ".join(self._format_issue(i) for i in blocking_errors)
                     raise ValueError(f"Schema validation failed: {formatted}")
 
             # ── Streaming cross-chunk duplicate-key check ─────────────────────
-            if resolved_load_strategy == "APPEND" and append_key_columns:
+            if (resolved_load_strategy == "APPEND" or enforce_truncate_keys) and append_key_columns:
                 available_keys = [k for k in append_key_columns if k in dataframe.columns]
                 if available_keys:
                     chunk_tuples = [
@@ -889,7 +1124,9 @@ class IngestionEngine:
 
         # ── Publish any remaining non-blocking validation results ─────────────
         if aggregated_issues:
-            self._publish_validation_issues(config, aggregated_issues)
+            self._publish_validation_issues(
+                config, aggregated_issues, ingest_stg_only=ingest_stg_only
+            )
             non_blocking_count = sum(
                 1 for i in aggregated_issues if i.severity.upper() != "ERROR"
             )
@@ -923,6 +1160,7 @@ class IngestionEngine:
         archive_folder: Optional[str] = None,
         load_strategy: Optional[str] = None,
         audit_id: Optional[int] = None,
+        ingest_stg_only: bool = False,
     ) -> int:
         """Stream-ingest a Parquet file via HTTP range requests in a single pass.
 
@@ -984,6 +1222,11 @@ class IngestionEngine:
         total_rows_scanned = 0
         first_chunk = True
         processed_any_chunk = False
+        enforce_truncate_keys = self._effective_stg_only(config, ingest_stg_only)
+        seen_key_tuples: set[tuple] = set()
+        key_columns: list[str] = []
+        if enforce_truncate_keys:
+            key_columns = self._staging_primary_key_columns(config)
 
         self._log_sql_ingestion_progress(
             processed_rows=0, total_rows=total_file_rows, context=str(config.id)
@@ -1042,10 +1285,42 @@ class IngestionEngine:
                     i for i in aggregated_issues if i.severity.upper() == "ERROR"
                 ]
                 if blocking_errors:
-                    self._publish_validation_issues(config, aggregated_issues)
+                    self._publish_validation_issues(
+                        config, aggregated_issues, ingest_stg_only=ingest_stg_only
+                    )
                     self._set_validation_error_count(len(blocking_errors))
                     formatted = "; ".join(self._format_issue(i) for i in blocking_errors)
                     raise ValueError(f"Schema validation failed: {formatted}")
+
+            if enforce_truncate_keys and key_columns:
+                available_keys = [k for k in key_columns if k in dataframe.columns]
+                if available_keys:
+                    chunk_tuples = [
+                        tuple(row)
+                        for row in dataframe[available_keys].itertuples(index=False, name=None)
+                    ]
+                    within_dup_mask = dataframe.duplicated(subset=available_keys, keep=False)
+                    cross_chunk_mask = pd.Series(
+                        [t in seen_key_tuples for t in chunk_tuples],
+                        index=dataframe.index,
+                    )
+                    dup_mask = within_dup_mask | cross_chunk_mask
+                    if dup_mask.any():
+                        dup_count = int(dup_mask.sum())
+                        sample_records = (
+                            dataframe.loc[dup_mask, available_keys]
+                            .drop_duplicates()
+                            .head(5)
+                            .to_dict(orient="records")
+                        )
+                        raise ValueError(
+                            f"PRIMARY_KEY_VIOLATION: File contains {dup_count} rows with "
+                            f"duplicate values on key column(s) {available_keys} for table "
+                            f"'{config.staging_table_name}'. This will cause a primary key "
+                            f"constraint violation during staging-only reload. "
+                            f"Sample duplicate key values: {sample_records}"
+                        )
+                    seen_key_tuples.update(chunk_tuples)
 
             self._load_dataframe(
                 config, dataframe,
@@ -1066,7 +1341,9 @@ class IngestionEngine:
 
         # ── Publish any remaining (non-blocking) validation results ───────────
         if aggregated_issues:
-            self._publish_validation_issues(config, aggregated_issues)
+            self._publish_validation_issues(
+                config, aggregated_issues, ingest_stg_only=ingest_stg_only
+            )
             non_blocking_count = sum(
                 1 for i in aggregated_issues if i.severity.upper() != "ERROR"
             )
@@ -1227,6 +1504,7 @@ class IngestionEngine:
         dataframe: pd.DataFrame,
         destination_columns: Optional[list[dict]] = None,
         precomputed_issues: Optional[list[ValidationIssue]] = None,
+        ingest_stg_only: bool = False,
     ) -> None:
         dest_columns = (
             destination_columns
@@ -1241,7 +1519,7 @@ class IngestionEngine:
             issues = [*precomputed_issues, *issues]
         if not issues:
             return
-        self._publish_validation_issues(config, issues)
+        self._publish_validation_issues(config, issues, ingest_stg_only=ingest_stg_only)
         blocking_errors = [i for i in issues if i.severity.upper() == "ERROR"]
         self._set_validation_error_count(len(blocking_errors))
         if blocking_errors:
@@ -1249,13 +1527,25 @@ class IngestionEngine:
             raise ValueError(f"Schema validation failed: {formatted}")
 
     def _publish_validation_issues(
-        self, config: IngestionConfig, issues: list[ValidationIssue]
+        self,
+        config: IngestionConfig,
+        issues: list[ValidationIssue],
+        *,
+        ingest_stg_only: bool = False,
     ) -> None:
         """Log every issue and dispatch a validation notification email.
 
         Delegates to :func:`~sharepoint_ingest.ingestion._engine_notifications.publish_and_notify_issues`.
         """
-        publish_and_notify_issues(config, issues, self.notifier, self.logger)
+        publish_and_notify_issues(
+            config,
+            issues,
+            self.notifier,
+            self.logger,
+            destination_context=self._destination_context(
+                config, ingest_stg_only=ingest_stg_only
+            ),
+        )
 
     # ── datetime helpers (thin class-level wrappers for backward compat) ──────
 
@@ -1314,9 +1604,23 @@ class IngestionEngine:
         dataframe: pd.DataFrame,
         config: IngestionConfig,
         resolved_load_strategy: str,
+        *,
+        enforce_for_truncate: bool = False,
     ) -> None:
         """Delegate to :func:`~sharepoint_ingest.ingestion._pk_checks.check_for_intra_file_duplicate_keys`."""
-        _check_pk_dups(dataframe, config, resolved_load_strategy, self._stg_client, self.logger)
+        _check_pk_dups(
+            dataframe,
+            config,
+            resolved_load_strategy,
+            self._stg_client,
+            self.logger,
+            enforce_for_truncate=enforce_for_truncate,
+            key_columns=(
+                self._staging_primary_key_columns(config)
+                if enforce_for_truncate
+                else None
+            ),
+        )
 
     def _resolve_merge_keys(self, config: IngestionConfig) -> list[str]:
         """Delegate to :func:`~sharepoint_ingest.ingestion._pk_checks.resolve_merge_keys`."""
@@ -1338,12 +1642,14 @@ class IngestionEngine:
         rows_scanned: Optional[int] = None,
         memory_peak_mb: Optional[float] = None,
         duration_seconds: Optional[float] = None,
+        ingest_stg_only: bool = False,
     ) -> None:
         """Delegate to :func:`~sharepoint_ingest.ingestion._engine_notifications.notify_failure`."""
         _eng_notify_failure(
             self.notifier, config, self.settings.env_name, error_message,
             file_name=file_name, rows_scanned=rows_scanned,
             memory_peak_mb=memory_peak_mb, duration_seconds=duration_seconds,
+            destination_context=self._destination_context(config, ingest_stg_only=ingest_stg_only),
             logger=self.logger,
         )
 
@@ -1356,12 +1662,14 @@ class IngestionEngine:
         rows_scanned: Optional[int] = None,
         memory_peak_mb: Optional[float] = None,
         duration_seconds: Optional[float] = None,
+        ingest_stg_only: bool = False,
     ) -> None:
         """Delegate to :func:`~sharepoint_ingest.ingestion._engine_notifications.notify_pk_violation`."""
         _eng_notify_pk_violation(
             self.notifier, config, self.settings.env_name, error_message,
             file_name=file_name, rows_scanned=rows_scanned,
             memory_peak_mb=memory_peak_mb, duration_seconds=duration_seconds,
+            destination_context=self._destination_context(config, ingest_stg_only=ingest_stg_only),
             logger=self.logger,
         )
 
@@ -1371,8 +1679,3 @@ class IngestionEngine:
     ) -> Optional[str]:
         """Delegate to :func:`~sharepoint_ingest.ingestion._notification_helpers.extract_sheet_name_from_issues`."""
         return extract_sheet_name_from_issues(issues)
-
-
-
-
-

@@ -40,8 +40,17 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ingestion-scope",
         default="real",
-        choices=["real", "test", "validation", "perf_test", "all"],
+        choices=["real", "test", "validation", "perf_test"],
         help="Filter ingestion configs by scope (default: real)",
+    )
+    parser.add_argument(
+        "--ingest-stg-only",
+        action="store_true",
+        help=(
+            "Load selected non-TEST configs into staging only. The staging table is "
+            "truncated once per config run, additional matched files append within "
+            "that run, and staging→integrated promotion is skipped."
+        ),
     )
     parser.add_argument(
         "--include-inactive",
@@ -59,6 +68,35 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Validate SQL/SharePoint connectivity and selected config filters without loading data",
     )
     return parser
+
+
+def _validate_dry_run_destinations(configs, stg_sql_client, int_sql_client, *, ingest_stg_only: bool) -> None:
+    """Validate destination table metadata for dry-run mode."""
+    for config in configs:
+        scope = str(config.ingestion_scope or "").strip().upper()
+        if not scope:
+            scope = "TEST" if config.test_data_enabled else "REAL"
+        effective_stg_only = bool(ingest_stg_only) and scope != "TEST"
+
+        stg_table = (config.staging_table_name or "").strip()
+        if not stg_table:
+            raise ValueError(f"Config id={config.id} has blank staging_table_name")
+        stg_cols = stg_sql_client.get_table_columns(stg_table)
+        if not stg_cols:
+            raise ValueError(
+                f"Config id={config.id} staging table '{stg_table}' was not found or has no columns"
+            )
+
+        if effective_stg_only:
+            continue
+
+        int_table = (config.integrated_table_name or "").strip()
+        if int_table and int_sql_client is not None:
+            int_cols = int_sql_client.get_table_columns(int_table)
+            if not int_cols:
+                raise ValueError(
+                    f"Config id={config.id} integrated table '{int_table}' was not found or has no columns"
+                )
 
 
 def _resolve_sharepoint_credentials(settings, provider=None) -> tuple[str, str, str]:
@@ -240,6 +278,12 @@ def run(argv: Optional[list[str]] = None) -> int:
                 ingestion_scope=args.ingestion_scope,
                 active_only=not args.include_inactive,
             )
+            _validate_dry_run_destinations(
+                planned,
+                stg_sql_client,
+                int_sql_client,
+                ingest_stg_only=args.ingest_stg_only,
+            )
             logger.info("Dry run successful. Selected %s config(s).", len(planned))
             return 0
 
@@ -248,6 +292,7 @@ def run(argv: Optional[list[str]] = None) -> int:
             workflow_id=args.workflow_id,
             ingestion_scope=args.ingestion_scope,
             include_inactive=args.include_inactive,
+            ingest_stg_only=args.ingest_stg_only,
         )
 
         logger.info(

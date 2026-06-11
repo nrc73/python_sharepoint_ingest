@@ -13,6 +13,8 @@
 -- ingest_stg_prod  / ingest_stg_dev
 --     sharepoint.*   — daily truncate-and-load landing tables
 --                      (identical structure to int tables)
+--                      --ingest-stg-only reloads these tables only and skips
+--                      integrated-table checks/promotion for non-TEST configs
 --
 -- ingest_int_prod  / ingest_int_dev
 --     sharepoint.*   — integrated (promoted) data tables
@@ -101,11 +103,11 @@ BEGIN
         process_id                       UNIQUEIDENTIFIER NULL,
         workflow_id                      VARCHAR(100)   NULL,
         -- destination tables
-        staging_table_name               VARCHAR(200)   NOT NULL,    -- e.g. sharepoint.dest_customers
-        integrated_table_name            VARCHAR(200)   NULL,        -- e.g. sharepoint.dest_customers (in int DB)
+        staging_table_name               VARCHAR(200)   NOT NULL,    -- e.g. sharepoint.dest_customers; required for --ingest-stg-only
+        integrated_table_name            VARCHAR(200)   NULL,        -- e.g. sharepoint.dest_customers (in int DB); ignored by non-TEST --ingest-stg-only
         is_active                        VARCHAR(1)     NOT NULL DEFAULT '1',
         file_name_pattern                VARCHAR(255)   NULL,
-        load_strategy                    VARCHAR(30)    NULL,        -- TRUNCATE | APPEND
+        load_strategy                    VARCHAR(30)    NULL,        -- TRUNCATE | APPEND; non-TEST --ingest-stg-only always reloads staging
         merge_key_columns                VARCHAR(400)   NULL,
         column_mapping_json              VARCHAR(MAX)   NOT NULL CONSTRAINT DF_spi_column_mapping_json DEFAULT '{}',
         ingestion_scope                  VARCHAR(20)    NOT NULL CONSTRAINT DF_spi_scope DEFAULT 'REAL',
