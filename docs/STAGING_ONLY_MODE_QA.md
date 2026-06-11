@@ -6,16 +6,16 @@ discussion for `python -m sharepoint_ingest.main --ingest-stg-only`.
 ## Original feature request
 
 > I want `python -m sharepoint_ingest.main` to have additional option
-> `--ingest-stg_only`. In this case regardless of whether the
+> `--ingest-stg-only`. In this case regardless of whether the
 > `[staging_table_name]` & `[integrated_table_name]` are populated in
 > `[config].[sharepoint_ingestion]` I only want the CSV, Excel and Parquet data
 > ingested into the stg database destination table. Note that this does not
-> apply to the `[ingestion_scope]='TEST'` ingestions. Where `--ingest-stg_only`
+> apply to the `[ingestion_scope]='TEST'` ingestions. Where `--ingest-stg-only`
 > is used, it's strictly a truncate and reload data ingestion.
 >
 > Where possible, all the same primary key checks, data type checks, config
 > table checks and all other email notifications should still apply when
-> `--ingest-stg_only` is used. Can you investigate any potential issues or
+> `--ingest-stg-only` is used. Can you investigate any potential issues or
 > confusions with the validations applied to the destination staging tables in
 > contrast to the integrated tables?
 
@@ -23,7 +23,7 @@ discussion for `python -m sharepoint_ingest.main --ingest-stg-only`.
 
 ### 1. CLI spelling
 
-**Question:** You requested `--ingest-stg_only` with an underscore, but the
+**Question:** You requested `--ingest-stg-only` with an underscore, but the
 current parser has `--ingest-stg-only` with hyphens. Should I support both
 aliases so existing tests/usage keep working, or replace the hyphenated form?
 
