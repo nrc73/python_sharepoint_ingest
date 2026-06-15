@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import datetime
 import io
+import json
 import logging
 from dataclasses import replace
 from types import SimpleNamespace
@@ -331,6 +332,19 @@ def test_generate_config_insert_defaults_blank_mapping_to_empty_json_object() ->
     assert "N'{}'" in sql
 
 
+def test_generate_config_insert_defaults_email_addresses_to_null() -> None:
+    sql = _generate_config_insert(
+        sharepoint_base_url="https://example.sharepoint.com/sites/dev",
+        sharepoint_process_folder="/Documents/source",
+        sharepoint_process_archive_folder="/Documents/source/Processed",
+        sharepoint_process_failed_folder="/Documents/source/Failed",
+        staging_table_name="staging.source",
+    )
+
+    assert "NathanChapman@company715.onmicrosoft.com" not in sql
+    assert "N'{}',\n    NULL,\n    NULL," in sql
+
+
 def test_snake_case_identifier_fragment_converts_camel_and_symbols() -> None:
     assert _snake_case_identifier_fragment("ValidCustomers", fallback="folder") == "valid_customers"
     assert _snake_case_identifier_fragment("Valid Customers - AU", fallback="folder") == "valid_customers_au"
@@ -657,7 +671,7 @@ def test_parse_csv_mapping_rows_flag_enables_mapping_only_output() -> None:
 
 def _print_group_sql_for_test(*, csv_mapping_rows_only: bool = False) -> None:
     group = _build_discovery_groups([
-        _candidate("orders.xlsx", cols=("order_id", "amount"), kind="excel")
+        _candidate("orders.xlsx", cols=("Order ID", "Order Amount"), kind="excel")
     ])[0]
 
     _print_group_sql(
@@ -669,7 +683,7 @@ def _print_group_sql_for_test(*, csv_mapping_rows_only: bool = False) -> None:
         dest_schema=_DEFAULT_DEST_SCHEMA,
         padding=0.20,
         all_file_names_in_folder=["orders.xlsx"],
-        notification_to="ops@example.com",
+        notification_to="",
         notification_cc="",
         csv_mapping_rows_only=csv_mapping_rows_only,
     )
@@ -688,6 +702,30 @@ def test_print_group_sql_default_omits_csv_mapping_rows(
     assert ",".join(_MAPPING_CSV_HEADER) not in output
 
 
+def test_print_group_sql_uses_real_table_name_snake_case_columns_mapping_and_blank_emails(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _print_group_sql_for_test()
+
+    output = capsys.readouterr().out
+    expected_mapping = json.dumps(
+        {"Order ID": "order_id", "Order Amount": "order_amount"},
+        separators=(",", ":"),
+    )
+
+    assert "-- Dest table:   sharepoint.orders_orders" in output
+    assert "CREATE TABLE [sharepoint].[orders_orders]" in output
+    assert "CONSTRAINT [PK_orders_orders] PRIMARY KEY CLUSTERED ([order_id])" in output
+    assert "PK_dest_" not in output
+    assert "sharepoint.dest_" not in output
+    assert "[order_id]" in output
+    assert "[order_amount]" in output
+    assert "[Order ID]" not in output
+    assert f"N'{expected_mapping}'" in output
+    assert "-- Suggested merge_key_columns: order_id" in output
+    assert f"N'{expected_mapping}',\n    NULL,\n    NULL," in output
+
+
 def test_print_group_sql_csv_mapping_rows_flag_outputs_only_mapping_rows(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -696,6 +734,7 @@ def test_print_group_sql_csv_mapping_rows_flag_outputs_only_mapping_rows(
     output = capsys.readouterr().out
     assert output.startswith(",".join(_MAPPING_CSV_HEADER))
     assert "orders_orders" in output
+    assert "Order ID" in output
     assert "order_id" in output
     assert "CREATE TABLE" not in output
     assert "INSERT INTO [config].[sharepoint_ingestion]" not in output
@@ -706,13 +745,15 @@ def test_print_group_sql_csv_mapping_rows_flag_outputs_only_mapping_rows(
 def test_generate_create_table_uses_sharepoint_schema_and_managed_columns() -> None:
     sql = _generate_create_table(
         schema=_DEFAULT_DEST_SCHEMA,
-        table_name="dest_orders",
+        table_name="orders",
         data_columns={"order_id": "INT", "amount": "FLOAT"},
         system_columns=_SYSTEM_COLUMNS_PLAIN,
         pk_columns=["order_id"],
     )
 
-    assert sql.startswith("CREATE TABLE [sharepoint].[dest_orders] (")
+    assert sql.startswith("CREATE TABLE [sharepoint].[orders] (")
+    assert "CONSTRAINT [PK_orders]" in sql
+    assert "PK_dest_" not in sql
     assert "[sp_ingest_load_dt]" in sql
     assert "DATETIME2(7)" in sql
     assert "[audit_id]" in sql
