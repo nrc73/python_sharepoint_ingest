@@ -58,6 +58,14 @@ is missing/invalid, because the integrated table is irrelevant to the run?
 
 **Answer:** Yes.
 
+### 16. Updated TEST-scope support
+
+**Question:** Should `--ingest-stg-only` also work with valid TEST ingestions?
+
+**Answer:** Yes. This supersedes the original TEST-scope exception: when
+`--ingest-stg-only` is supplied, selected TEST configs should also load into the
+configured staging table only and skip staging→integrated promotion.
+
 ### 5. Schema/data type check destination
 
 **Question:** Currently schema validation uses `staging_table_name` metadata. Is
@@ -150,13 +158,13 @@ failing later at metadata/load time?
 ## Resulting implementation decisions
 
 - CLI uses `--ingest-stg-only`.
-- Non-`TEST` staging-only runs require a populated, valid `staging_table_name`.
+- Staging-only runs, including `TEST` scope, require a populated, valid
+  `staging_table_name`.
 - `integrated_table_name` is not used as fallback and integrated-table metadata
-  is ignored for non-`TEST` staging-only runs.
+  is ignored for staging-only runs.
 - Staging-only mode forces a truncate/reload into the staging DB: first load unit
   truncates, later files/chunks in the same run append.
-- TEST configs keep the normal staging→integrated behavior even when the flag is
-  supplied.
+- TEST configs use staging-only behavior when the flag is supplied.
 - Schema/type validation uses staging table metadata.
 - Duplicate-key prechecks use staging-table primary key columns only.
 - Validation warnings still notify without blocking the load; blocking errors

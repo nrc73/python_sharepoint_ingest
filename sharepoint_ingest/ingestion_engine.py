@@ -159,10 +159,11 @@ class IngestionEngine:
     def _effective_stg_only(self, config: "IngestionConfig", ingest_stg_only: bool) -> bool:
         """Return whether staging-only mode applies to this config.
 
-        TEST-scope configs intentionally keep the normal staging→integrated path
-        even when the CLI flag is supplied.
+        When requested, staging-only mode applies to every selected config scope,
+        including TEST. The scope filter still controls which configs are selected;
+        this helper only controls the destination behavior after selection.
         """
-        return bool(ingest_stg_only) and self._normalized_config_scope(config) != "TEST"
+        return bool(ingest_stg_only)
 
     def _audit_destination_database(
         self, config: "IngestionConfig", *, ingest_stg_only: bool = False

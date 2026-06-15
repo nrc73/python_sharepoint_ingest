@@ -140,7 +140,7 @@ def test_staging_only_overrides_append_config_to_truncate_reload() -> None:
     assert load_calls == [("truncate_and_load", "staging.target", 1)]
 
 
-def test_test_scope_uses_normal_promotion_even_when_staging_only_flag_is_set() -> None:
+def test_test_scope_uses_staging_only_when_flag_is_set() -> None:
     engine, audit_sql, stg_sql, _ = _make_engine({"/folder/a.csv": b"id,value\n1,a\n", "/folder/b.csv": b"id,value\n2,b\n"})
     config = make_config("TRUNCATE")
     config.multi_file_ingest = False
@@ -151,10 +151,11 @@ def test_test_scope_uses_normal_promotion_even_when_staging_only_flag_is_set() -
     result = engine._process_config(config, ingest_stg_only=True)
 
     assert result.files_processed == 1
-    assert any(call[0] == "copy_stg_to_int" for call in stg_sql.calls)
+    assert not any(call[0] == "copy_stg_to_int" for call in stg_sql.calls)
+    assert ("truncate_and_load", "staging.target", 1) in stg_sql.calls
     update_records = [kwargs for action, kwargs in audit_sql.records if action == "update"]
-    assert update_records[-1]["destination_database"] == "ingest_int_dev"
-    assert update_records[-1]["destination_table"] == "sharepoint.integrated_target"
+    assert update_records[-1]["destination_database"] == "ingest_stg_dev"
+    assert update_records[-1]["destination_table"] == "staging.target"
 
 
 def test_staging_only_truncate_reload_still_checks_duplicate_primary_keys() -> None:

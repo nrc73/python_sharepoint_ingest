@@ -142,9 +142,9 @@ python -m sharepoint_ingest.main --ingest-stg-only --ingestion-scope real
 
 Operational contract:
 
-- Applies only to non-`TEST` configs. `TEST` configs keep the normal staging→integrated path even when the flag is supplied.
+- Applies to every selected ingestion scope, including `TEST` configs.
 - Requires `staging_table_name` to be populated and present in the staging database; the runner fails fast and never falls back to `integrated_table_name`.
-- Ignores integrated-table existence/metadata for non-`TEST` staging-only runs.
+- Ignores integrated-table existence/metadata for staging-only runs.
 - Forces a strict staging truncate/reload: the first selected file/chunk truncates the staging table, then later chunks/files in the same config run append to complete the reload set.
 - Schema/type validation uses staging table metadata. Validation warnings still notify and allow the load; blocking validation errors fail the file.
 - Duplicate-key prechecks use the staging table primary key only. Existing rows in staging/integrated are not conflict-checked because the staging table is reloaded.
@@ -191,7 +191,7 @@ Key columns after the v2 schema update:
 |---|---|---|
 | `staging_table_name` | `VARCHAR(200)` | Fully-qualified stg table, e.g. `staging.dest_customers` |
 | `integrated_table_name` | `VARCHAR(200)` | Fully-qualified int table (usually same name, different DB) |
-| `load_strategy` | `VARCHAR(30)` | `TRUNCATE` or `APPEND` — controls int promotion step; ignored by non-`TEST` `--ingest-stg-only`, which always reloads staging |
+| `load_strategy` | `VARCHAR(30)` | `TRUNCATE` or `APPEND` — controls int promotion step; ignored by `--ingest-stg-only`, which always reloads staging |
 | `to_email_address` | `VARCHAR(400)` | Primary notification recipient |
 | `cc_email_address` | `VARCHAR(400)` | CC notification recipients |
 

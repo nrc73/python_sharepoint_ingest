@@ -49,7 +49,7 @@ It is intended as a single handoff artifact for external documentation and opera
 - If blocking errors exist, the run fails and a failure audit record is written.
 - With `--ingest-stg-only`, source-vs-destination checks compare against the
   configured staging table metadata. Integrated-table metadata is intentionally
-  ignored for non-`TEST` staging-only runs.
+  ignored for staging-only runs.
 
 ---
 
@@ -98,8 +98,8 @@ It is intended as a single handoff artifact for external documentation and opera
    - If DB rejects append due to PK/unique constraint, `append_load` catches `IntegrityError` and re-raises as `PRIMARY_KEY_VIOLATION`.
 
 3. **Staging-only reload duplicate detection**
-   - For non-`TEST` `--ingest-stg-only`, duplicate prechecks use the staging
-     table primary key columns only.
+   - For `--ingest-stg-only`, duplicate prechecks use the staging table primary
+     key columns only.
    - Existing rows in staging/integrated are not conflict-checked because the
      staging destination is truncated/reloaded for the run.
 
@@ -114,9 +114,10 @@ It is intended as a single handoff artifact for external documentation and opera
 
 ## 4.1) `--ingest-stg-only` operational behavior
 
-`python -m sharepoint_ingest.main --ingest-stg-only` is a non-`TEST` staging
-reload mode. It loads CSV, Excel, and Parquet data into the configured staging
-database/table only and skips staging→integrated promotion.
+`python -m sharepoint_ingest.main --ingest-stg-only` is a staging reload mode.
+It loads CSV, Excel, and Parquet data into the configured staging database/table
+only and skips staging→integrated promotion for every selected scope, including
+`TEST`.
 
 Validation and notification behavior remains the same where possible:
 
@@ -125,9 +126,7 @@ Validation and notification behavior remains the same where possible:
   paths;
 - validation warning emails still send without blocking the load;
 - audit and notification context identifies the actual destination database and
-  table;
-- `TEST` scope is explicitly excluded and continues to run the normal promotion
-  path.
+  table.
 
 ---
 

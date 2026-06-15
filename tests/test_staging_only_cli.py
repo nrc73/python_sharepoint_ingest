@@ -72,9 +72,11 @@ def test_dry_run_staging_only_requires_staging_table_even_when_integrated_popula
     assert integ.requested == []
 
 
-def test_dry_run_staging_only_still_checks_integrated_table_for_test_scope() -> None:
+def test_dry_run_staging_only_ignores_missing_integrated_table_for_test_scope() -> None:
     stg = _TableSql({"sharepoint.staging": [{"column_name": "id"}]})
     integ = _TableSql({})
 
-    with pytest.raises(ValueError, match="integrated table"):
-        _validate_dry_run_destinations([_cfg("TEST")], stg, integ, ingest_stg_only=True)
+    _validate_dry_run_destinations([_cfg("TEST")], stg, integ, ingest_stg_only=True)
+
+    assert stg.requested == ["sharepoint.staging"]
+    assert integ.requested == []

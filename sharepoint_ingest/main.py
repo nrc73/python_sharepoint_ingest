@@ -47,7 +47,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--ingest-stg-only",
         action="store_true",
         help=(
-            "Load selected non-TEST configs into staging only. The staging table is "
+            "Load selected configs into staging only. The staging table is "
             "truncated once per config run, additional matched files append within "
             "that run, and staging→integrated promotion is skipped."
         ),
@@ -73,10 +73,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def _validate_dry_run_destinations(configs, stg_sql_client, int_sql_client, *, ingest_stg_only: bool) -> None:
     """Validate destination table metadata for dry-run mode."""
     for config in configs:
-        scope = str(config.ingestion_scope or "").strip().upper()
-        if not scope:
-            scope = "TEST" if config.test_data_enabled else "REAL"
-        effective_stg_only = bool(ingest_stg_only) and scope != "TEST"
+        effective_stg_only = bool(ingest_stg_only)
 
         stg_table = (config.staging_table_name or "").strip()
         if not stg_table:
