@@ -1022,3 +1022,93 @@ def test_discover_passes_resolved_credentials_to_sql_client() -> None:
     assert used.username == "kv_user"
     assert used.password == "kv_pass"
     assert used.database == "ingest_audit_dev"
+
+
+def test_build_sp_client_prefers_key_vault_site_url_over_env_fallback() -> None:
+    """Discovery should mirror main.py: KV site-url beats SHAREPOINT_SITE_URL_DEV."""
+    import tools.discover_new_ingestion as _disc
+
+    settings = replace(
+        _make_app_settings(aud_db="ingest_audit_dev"),
+        sharepoint=SharePointSettings(
+            site_url="https://wrong.example.sharepoint.com/sites/from-env",
+            admin_url=None,
+        ),
+    )
+    provider = MagicMock()
+    provider.get_sharepoint_credentials.return_value = ("client-id", "client-secret", "tenant-id")
+    provider.get_secret.return_value = "https://contoso.sharepoint.com/sites/data_ingest_dev"
+
+    captured_site_urls: list[str] = []
+
+    def _fake_sp_client(*, site_url: str, client_id: str, client_secret: str, tenant_id: str):
+        captured_site_urls.append(site_url)
+        return SimpleNamespace(site_url=site_url)
+
+    with (
+        patch.object(_disc, "maybe_build_provider", return_value=provider),
+        patch.object(_disc, "SharePointClient", side_effect=_fake_sp_client),
+    ):
+        _sp, patched_settings = _disc._build_sp_client(settings)
+
+    provider.get_secret.assert_called_once_with("dm-sharepoint-dev-site-url")
+    assert patched_settings.sharepoint.site_url == "https://contoso.sharepoint.com/sites/data_ingest_dev"
+    assert captured_site_urls == ["https://contoso.sharepoint.com/sites/data_ingest_dev"]
+
+
+def test_discover_generated_insert_uses_resolved_site_url_not_first_config_row(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """New config SQL must not copy stale sharepoint_base_url from row id=1."""
+    import tools.discover_new_ingestion as _disc
+
+    resolved_site_url = "https://contoso.sharepoint.com/sites/data_ingest_dev"
+    stale_sql_url = "https://wrong.example.sharepoint.com/sites/stale"
+
+    settings = replace(
+        _make_app_settings(aud_db="ingest_audit_dev"),
+        sharepoint=SharePointSettings(site_url=resolved_site_url, admin_url=None),
+    )
+
+    sql_mock = MagicMock()
+    sql_mock.test_connection.return_value = None
+    sql_mock.query_rows.return_value = [
+        {
+            "id": 1,
+            "sharepoint_base_url": stale_sql_url,
+            "sharepoint_process_folder": "/sites/data_ingest_dev/Documents/Existing",
+        }
+    ]
+
+    sp_mock = MagicMock()
+    sp_mock.list_folders.return_value = [
+        SimpleNamespace(
+            name="New Folder",
+            server_relative_url="/sites/data_ingest_dev/Documents/New Folder",
+        )
+    ]
+    sp_mock.list_files.return_value = [
+        SimpleNamespace(
+            name="orders.csv",
+            server_relative_url="/sites/data_ingest_dev/Documents/New Folder/orders.csv",
+        )
+    ]
+
+    with (
+        patch.object(_disc, "load_settings", return_value=settings),
+        patch.object(_disc, "maybe_build_provider", return_value=MagicMock()),
+        patch.object(_disc, "_resolve_database_names", return_value=settings),
+        patch.object(_disc, "_resolve_sql_settings", return_value=settings.sql),
+        patch.object(_disc, "SqlClient", return_value=sql_mock),
+        patch.object(_disc, "_build_sp_client", return_value=(sp_mock, settings)),
+        patch.object(
+            _disc,
+            "_build_profile_candidate",
+            return_value=_candidate("orders.csv", cols=("order_id", "amount"), kind="csv"),
+        ),
+    ):
+        _disc.discover(env="dev")
+
+    output = capsys.readouterr().out
+    assert f"N'{resolved_site_url}'" in output
+    assert stale_sql_url not in output

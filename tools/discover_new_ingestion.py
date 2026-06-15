@@ -1240,8 +1240,10 @@ def _build_sp_client(settings) -> tuple["SharePointClient", object]:
     if provider is not None:
         print("  [auth] Fetching SharePoint credentials from Key Vault …")
         client_id, client_secret, tenant_id = provider.get_sharepoint_credentials(env_name)
-        # Resolve site URL from Key Vault (mirrors main.py lines 128-138)
-        if settings.key_vault.site_url_secret_name and not settings.sharepoint.site_url:
+        # Resolve site URL from Key Vault.  This intentionally mirrors main.py:
+        # Key Vault is authoritative; SHAREPOINT_SITE_URL_<ENV> is only an
+        # emergency local-dev fallback when KV cannot be read.
+        if settings.key_vault.site_url_secret_name:
             try:
                 site_url = provider.get_secret(settings.key_vault.site_url_secret_name)
                 settings = _dc_replace(
@@ -1372,9 +1374,26 @@ def discover(
     _status("      SQL connection OK.")
 
     # ------------------------------------------------------------------
-    # 2. Existing config rows
+    # 2. SharePoint connection
     # ------------------------------------------------------------------
-    _status("\n[2/5] Loading existing [config].[sharepoint_ingestion] rows …")
+    _status("\n[2/5] Connecting to SharePoint …")
+    sp, settings = _call_with_optional_stdout_suppressed(
+        csv_mapping_rows_only,
+        _build_sp_client,
+        settings,
+    )
+    _status("      Connected.")
+    _status(f"      SharePoint site: {settings.sharepoint.site_url}")
+
+    # The generated config should use the authoritative environment SharePoint
+    # base URL (resolved from Key Vault above), not copy an arbitrary existing
+    # SQL config row which may be stale or from a previous environment.
+    default_base_url = settings.sharepoint.site_url
+
+    # ------------------------------------------------------------------
+    # 3. Existing config rows
+    # ------------------------------------------------------------------
+    _status("\n[3/5] Loading existing [config].[sharepoint_ingestion] rows …")
     existing_rows = sql.query_rows(
         "SELECT * FROM [config].[sharepoint_ingestion] ORDER BY id"
     )
@@ -1392,25 +1411,12 @@ def discover(
     _status(f"      Normalized configured folder key(s): {len(configured)}")
 
     first = existing_rows[0] if existing_rows else None
-    default_base_url = str(first.get("sharepoint_base_url") or "") if first else ""
     first_folder = str(first.get("sharepoint_process_folder") or "") if first else ""
     default_root = first_folder.rsplit("/", 1)[0] if "/" in first_folder else first_folder
     # Do not suggest notification recipients for newly discovered REAL configs.
     # Operators can fill these in manually when applying the generated SQL.
     default_notification_to = ""
     default_notification_cc = ""
-
-    # ------------------------------------------------------------------
-    # 3. SharePoint connection
-    # ------------------------------------------------------------------
-    _status("\n[3/5] Connecting to SharePoint …")
-    sp, settings = _call_with_optional_stdout_suppressed(
-        csv_mapping_rows_only,
-        _build_sp_client,
-        settings,
-    )
-    _status("      Connected.")
-    _status(f"      SharePoint site: {settings.sharepoint.site_url}")
 
     scan_root = base_folder or default_root
     if not scan_root:
