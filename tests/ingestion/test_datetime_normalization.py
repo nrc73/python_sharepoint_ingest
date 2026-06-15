@@ -45,6 +45,45 @@ def test_datetime_column_infers_ambiguous_values_from_unambiguous_dmy_hints() ->
     assert str(normalized.loc[1, "txn_date"].date()) == "2026-04-03"
 
 
+def test_bit_column_converts_strict_boolean_text_and_numbers() -> None:
+    engine = make_engine()
+    source = pd.DataFrame(
+        {
+            "flag": ["True", "false", "1", "0", "t", "F", 1, 0, None, ""],
+            "description": ["Yes", "No", "Y", "N", "text", "other", "a", "b", "c", "d"],
+        }
+    )
+    dest_cols = [
+        {"column_name": "flag", "data_type": "bit"},
+        {"column_name": "description", "data_type": "varchar"},
+    ]
+
+    normalized = engine._normalize_dataframe(source, source_kind="csv", destination_columns=dest_cols)
+
+    assert normalized["flag"].tolist() == [
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+        None,
+        None,
+    ]
+    assert normalized["description"].tolist()[:4] == ["Yes", "No", "Y", "N"]
+
+
+def test_bit_column_rejects_yes_no_text_with_clear_error() -> None:
+    engine = make_engine()
+    source = pd.DataFrame({"flag": ["Yes", "No"]})
+    dest_cols = [{"column_name": "flag", "data_type": "bit"}]
+
+    with pytest.raises(ValueError, match="Yes/No and Y/N are treated as strings"):
+        engine._normalize_dataframe(source, source_kind="csv", destination_columns=dest_cols)
+
+
 def test_detect_excel_datetime_stored_as_text_warning_issue() -> None:
     engine = make_engine()
     source = pd.DataFrame(

@@ -180,7 +180,7 @@ def _is_code_like_varchar(series: pd.Series) -> bool:
 # ---------------------------------------------------------------------------
 # Type-inference helpers
 # ---------------------------------------------------------------------------
-_BIT_VALUES = {"0", "1", "true", "false", "t", "f", "yes", "no", "y", "n"}
+_BIT_VALUES = {"0", "1", "true", "false", "t", "f"}
 _DECIMAL_MAX_SCALE = 5
 _DECIMAL_DEFAULT_PRECISION = 18
 _DECIMAL_MAX_PRECISION = 38

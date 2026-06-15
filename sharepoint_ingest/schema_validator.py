@@ -16,7 +16,7 @@ MANAGED_DESTINATION_COLUMNS = {
     "__$job_instance_id",
 }
 
-_BIT_TEXT_VALUES = {"0", "1", "true", "false", "t", "f", "yes", "no", "y", "n"}
+_BIT_TEXT_VALUES = {"0", "1", "true", "false", "t", "f"}
 
 
 def _normalize(name: str) -> str:

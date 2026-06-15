@@ -95,6 +95,9 @@ MAX_PARQUET_FILE_SIZE_BYTES: int = 512 * 1024 * 1024  # 512 MiB hard cap
 class IngestionEngine:
     _PROGRESS_PCT_STEPS = (0, 10, 25, 50, 75, 90, 100)
     _GRAPH_EXCEL_MODES = {"binary_only", "protected_auto", "cloud_excel_only"}
+    _BIT_TRUE_TEXT_VALUES = {"1", "true", "t"}
+    _BIT_FALSE_TEXT_VALUES = {"0", "false", "f"}
+    _BIT_TEXT_VALUES = _BIT_TRUE_TEXT_VALUES | _BIT_FALSE_TEXT_VALUES
 
     def __init__(
         self,
@@ -1488,6 +1491,13 @@ class IngestionEngine:
                 normalized[col] = normalized[col].map(
                     lambda v: v.strip() if isinstance(v, str) else v
                 )
+        bit_cols = self._destination_bit_columns(destination_columns)
+        for source_col in normalized.columns:
+            if source_col.strip().lower() not in bit_cols:
+                continue
+            normalized[source_col] = self._coerce_bit_series(
+                normalized[source_col], column_name=source_col
+            )
         dt_cols = destination_datetime_columns(destination_columns)
         for source_col in normalized.columns:
             if source_col.strip().lower() not in dt_cols:
@@ -1498,6 +1508,57 @@ class IngestionEngine:
                 column_name=source_col,
             )
         return normalized
+
+    @classmethod
+    def _destination_bit_columns(cls, destination_columns: list[dict]) -> set[str]:
+        result: set[str] = set()
+        for col in destination_columns:
+            column_name = str(col.get("column_name") or "").strip().lower()
+            data_type = str(col.get("data_type") or "").strip().lower()
+            if column_name and data_type == "bit":
+                result.add(column_name)
+        return result
+
+    @classmethod
+    def _coerce_bit_series(cls, series: pd.Series, *, column_name: str) -> pd.Series:
+        """Convert strict bit-compatible tokens to Python bool/None values.
+
+        Deliberately do not treat ``Yes``/``No`` or ``Y``/``N`` as booleans.
+        Those are business text values in this project.  A destination SQL ``bit``
+        column cannot preserve them, so fail before SQLAlchemy emits a very large
+        executemany error dump.
+        """
+        if pd.api.types.is_bool_dtype(series):
+            return series.astype(object).where(series.notna(), None)
+
+        def _coerce(value):
+            if value is None or pd.isna(value):
+                return None
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, int) and not isinstance(value, bool):
+                if value in (0, 1):
+                    return bool(value)
+                raise ValueError(
+                    f"Invalid boolean value for bit column '{column_name}': {value!r}. "
+                    "Expected only true/false/t/f/1/0 values. Yes/No and Y/N are treated as strings; "
+                    "use a text destination column if those values must be preserved."
+                )
+            text = str(value).strip()
+            if text == "":
+                return None
+            key = text.lower()
+            if key in cls._BIT_TRUE_TEXT_VALUES:
+                return True
+            if key in cls._BIT_FALSE_TEXT_VALUES:
+                return False
+            raise ValueError(
+                f"Invalid boolean value for bit column '{column_name}': {value!r}. "
+                "Expected only true/false/t/f/1/0 values. Yes/No and Y/N are treated as strings; "
+                "use a text destination column if those values must be preserved."
+            )
+
+        return series.map(_coerce).astype(object)
 
     def _run_schema_checks(
         self,

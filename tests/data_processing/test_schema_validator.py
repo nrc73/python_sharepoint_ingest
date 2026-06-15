@@ -138,11 +138,11 @@ def test_schema_validator_allows_fractional_values_for_float_destination_metadat
     assert "NUMERIC_PRECISION_EXCEEDED" not in codes
 
 
-def test_schema_validator_accepts_bit_like_text_for_bit_destination() -> None:
-    """CSV object columns inferred as BIT by discovery should validate as BIT at runtime."""
+def test_schema_validator_accepts_strict_bit_like_text_for_bit_destination() -> None:
+    """Only strict True/False and 1/0-style text validates as SQL BIT."""
     source = pd.DataFrame(
         {
-            "child_dependant_cover": ["Y", "N", "yes", "no", "1", "0", None],
+            "child_dependant_cover": ["True", "False", "t", "f", "1", "0", None],
         }
     )
     destination_columns = [
@@ -157,6 +157,23 @@ def test_schema_validator_accepts_bit_like_text_for_bit_destination() -> None:
     codes = {i.code for i in issues}
 
     assert "TYPE_MISMATCH" not in codes
+
+
+def test_schema_validator_rejects_yes_no_text_for_bit_destination() -> None:
+    """Yes/No and Y/N are business strings, not booleans."""
+    source = pd.DataFrame({"child_dependant_cover": ["Y", "N", "yes", "no"]})
+    destination_columns = [
+        {
+            "column_name": "child_dependant_cover",
+            "data_type": "bit",
+            "character_maximum_length": None,
+        }
+    ]
+
+    issues = validate_source_against_destination(source, destination_columns)
+    codes = {i.code for i in issues}
+
+    assert "TYPE_MISMATCH" in codes
 
 
 def test_schema_validator_rejects_decimal_text_for_scale_zero_destination_even_when_whole_number() -> None:
