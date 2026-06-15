@@ -21,8 +21,8 @@ It is intended as a single handoff artifact for external documentation and opera
 
 ### Main code paths
 
-- `src/schema_validator.py` → `validate_source_against_destination`
-- `src/ingestion_engine.py` → `_run_schema_checks`, `_detect_excel_datetime_text_issues`, `_normalize_dataframe`, `_convert_series_to_datetime`
+- `sharepoint_ingest/schema_validator.py` → `validate_source_against_destination`
+- `sharepoint_ingest/ingestion_engine.py` → `_run_schema_checks`, `_detect_excel_datetime_text_issues`, `_normalize_dataframe`, `_convert_series_to_datetime`
 
 ### Covered checks
 
@@ -42,6 +42,19 @@ It is intended as a single handoff artifact for external documentation and opera
 8. High null ratio (`HIGH_NULL_RATIO`, WARNING)
 9. Excel datetime stored as text (`EXCEL_DATETIME_STORED_AS_TEXT`, WARNING)
 10. Ambiguous/unparseable date values (raises `ValueError`, blocking)
+
+### Numeric type validation notes
+
+- Exact SQL numeric destinations (`DECIMAL`, `NUMERIC`, integer types, `MONEY`,
+  `SMALLMONEY`) are checked for precision/scale overflow before load.
+- Approximate SQL numeric destinations (`FLOAT`, `REAL`) are treated as numeric
+  for family compatibility, but SQL Server's metadata value `numeric_scale=0`
+  is **not** interpreted as “fractional values are forbidden”.  This prevents
+  false `NUMERIC_SCALE_EXCEEDED` errors for values such as `3.1` in an existing
+  `FLOAT` column.
+- For newly discovered ingestions, `tools/discover_new_ingestion.py` prefers
+  `DECIMAL(p,s)` for ordinary business decimals up to 5 decimal places and uses
+  `FLOAT` only when the observed scale is greater than 5.
 
 ### Notification behavior
 

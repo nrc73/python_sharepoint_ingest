@@ -44,6 +44,7 @@ import sys
 import uuid
 from dataclasses import dataclass, field
 from collections import defaultdict
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from typing import Any
 from urllib.parse import urlparse
@@ -180,10 +181,104 @@ def _is_code_like_varchar(series: pd.Series) -> bool:
 # Type-inference helpers
 # ---------------------------------------------------------------------------
 _BIT_VALUES = {"0", "1", "true", "false", "t", "f", "yes", "no", "y", "n"}
+_DECIMAL_MAX_SCALE = 5
+_DECIMAL_DEFAULT_PRECISION = 18
+_DECIMAL_MAX_PRECISION = 38
+_CSV_DATE_TEXT_RE = re.compile(
+    r"^\s*(?:"
+    r"\d{4}[-/]\d{1,2}[-/]\d{1,2}"
+    r"|"
+    r"\d{1,2}[-/]\d{1,2}[-/]\d{4}"
+    r")"
+    r"(?:\s+\d{1,2}:\d{2}(?::\d{2}(?:\.\d{1,7})?)?(?:\s*[AP]M)?)?\s*$",
+    re.IGNORECASE,
+)
+_CSV_TIME_TEXT_RE = re.compile(
+    r"\d{1,2}:\d{2}(?::\d{2}(?:\.\d{1,7})?)?(?:\s*[AP]M)?",
+    re.IGNORECASE,
+)
+
+
+def _decimal_digit_profile(value: object) -> tuple[int, int] | None:
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        dec = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+    if not dec.is_finite():
+        return None
+
+    _sign, digits, exponent = dec.as_tuple()
+    total_digits = len(digits)
+    if exponent >= 0:
+        fraction_digits = 0
+        total_digits += exponent
+    else:
+        fraction_digits = -exponent
+        if total_digits < fraction_digits:
+            total_digits = fraction_digits
+    return max(total_digits, 1), fraction_digits
+
+
+def _decimal_type_for_values(values: pd.Series) -> str:
+    observed_precision = 0
+    observed_scale = 0
+    for raw in values.dropna():
+        profile = _decimal_digit_profile(raw)
+        if profile is None:
+            return "FLOAT"
+        precision, scale = profile
+        observed_precision = max(observed_precision, precision)
+        observed_scale = max(observed_scale, scale)
+
+    if observed_scale > _DECIMAL_MAX_SCALE or observed_precision > _DECIMAL_MAX_PRECISION:
+        return "FLOAT"
+    precision = max(_DECIMAL_DEFAULT_PRECISION, observed_precision, observed_scale + 1)
+    precision = min(precision, _DECIMAL_MAX_PRECISION)
+    return f"DECIMAL:{precision}:{observed_scale}"
+
+
+def _infer_datetime_text_type(str_vals: pd.Series) -> str | None:
+    """Infer DATE/DATETIME2 for consistently formatted CSV-style text values."""
+    normalized = str_vals.astype(str).str.strip()
+    normalized = normalized[normalized != ""]
+    if normalized.empty:
+        return None
+    if not normalized.map(lambda v: bool(_CSV_DATE_TEXT_RE.match(v))).all():
+        return None
+
+    # Collapse repeated spaces so values like "4/1/2026  12:00:00 AM" parse reliably.
+    parse_values = normalized.map(lambda v: re.sub(r"\s+", " ", v))
+    parsed = parse_values.map(lambda v: pd.to_datetime(v, errors="coerce"))
+    if parsed.isna().any():
+        return None
+
+    has_explicit_time = parse_values.map(lambda v: bool(_CSV_TIME_TEXT_RE.search(v))).any()
+    has_non_midnight_time = any(
+        ts.hour != 0 or ts.minute != 0 or ts.second != 0 or ts.microsecond != 0
+        for ts in parsed
+    )
+    return "DATETIME2(3)" if has_explicit_time or has_non_midnight_time else "DATE"
+
+
+def _parse_decimal_raw_type(t: str) -> tuple[int, int] | None:
+    if t.startswith("DECIMAL:"):
+        _prefix, precision, scale = t.split(":", 2)
+        return int(precision), int(scale)
+    match = re.match(r"^DECIMAL\((\d+)\s*,\s*(\d+)\)$", t, flags=re.IGNORECASE)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    return None
 
 
 def _infer_series(series: pd.Series) -> str:
-    """Return narrowest raw SQL type for a pandas Series.  VARCHAR returned as 'VARCHAR:<n>'."""
+    """Return narrowest raw SQL type for a pandas Series.
+
+    VARCHAR is returned as ``VARCHAR:<n>`` and DECIMAL as ``DECIMAL:<p>:<s>``
+    until finalisation so profiles can be merged across files/sheets.
+    """
     non_null = series.dropna()
     if non_null.empty:
         return "VARCHAR(255)"
@@ -198,7 +293,7 @@ def _infer_series(series: pd.Series) -> str:
         rounded = non_null.round(0)
         if (non_null - rounded).abs().max() < 1e-9:
             return "INT" if non_null.abs().max() <= 2_147_483_647 else "BIGINT"
-        return "FLOAT"
+        return _decimal_type_for_values(non_null)
     if pd.api.types.is_datetime64_any_dtype(dtype):
         has_time = any(t.hour or t.minute or t.second for t in non_null.dt.time)
         return "DATETIME2(3)" if has_time else "DATE"
@@ -207,13 +302,9 @@ def _infer_series(series: pd.Series) -> str:
     str_vals = non_null.astype(str)
     # Try datetime
     try:
-        parsed = pd.to_datetime(str_vals, infer_datetime_format=True, errors="coerce")
-        if parsed.notna().all():
-            has_time = any(
-                t.hour != 0 or t.minute != 0 or t.second != 0
-                for t in parsed.dt.time
-            )
-            return "DATETIME2(3)" if has_time else "DATE"
+        inferred_datetime = _infer_datetime_text_type(str_vals)
+        if inferred_datetime:
+            return inferred_datetime
     except Exception:
         pass
     # Try numeric
@@ -222,7 +313,7 @@ def _infer_series(series: pd.Series) -> str:
         if nums.notna().all():
             if (nums == nums.round(0)).all():
                 return "INT" if nums.abs().max() <= 2_147_483_647 else "BIGINT"
-            return "FLOAT"
+            return _decimal_type_for_values(str_vals)
     except Exception:
         pass
     # Bit-like
@@ -252,9 +343,30 @@ def _merge_types(a: str, b: str) -> str:
             "BIT": 1, "INT": 11, "BIGINT": 20, "FLOAT": 25,
             "DATE": 10, "DATETIME2(3)": 27, "DATETIME2(7)": 27,
         }
+        da, db = _parse_decimal_raw_type(a), _parse_decimal_raw_type(b)
+        if da is not None:
+            _fallback[a] = da[0] + 2
+        if db is not None:
+            _fallback[b] = db[0] + 2
         wa = la if la is not None else _fallback.get(a, 255)
         wb = lb if lb is not None else _fallback.get(b, 255)
         return f"VARCHAR:{max(wa, wb)}"
+    da, db = _parse_decimal_raw_type(a), _parse_decimal_raw_type(b)
+    if da is not None or db is not None:
+        if a == "FLOAT" or b == "FLOAT":
+            return "FLOAT"
+        int_digits = {"BIT": 1, "INT": 10, "BIGINT": 19}
+        a_int = da[0] - da[1] if da is not None else int_digits.get(a)
+        b_int = db[0] - db[1] if db is not None else int_digits.get(b)
+        if a_int is None or b_int is None:
+            return "VARCHAR:50"
+        scale = max(da[1] if da is not None else 0, db[1] if db is not None else 0)
+        if scale > _DECIMAL_MAX_SCALE:
+            return "FLOAT"
+        precision = max(_DECIMAL_DEFAULT_PRECISION, a_int, b_int, a_int + scale, b_int + scale)
+        if precision > _DECIMAL_MAX_PRECISION:
+            return "FLOAT"
+        return f"DECIMAL:{precision}:{scale}"
     if a in _NUM and b in _NUM:
         return a if _NUM[a] >= _NUM[b] else b
     if a in _TMP and b in _TMP:
@@ -269,6 +381,10 @@ def _finalize_type(raw: str, padding: float = 0.20) -> str:
         padded_exact = max(10, raw_len * (1 + padding))
         padded = int(math.ceil(padded_exact / 10.0)) * 10
         return "VARCHAR(MAX)" if padded > 8000 else f"VARCHAR({padded})"
+    decimal_type = _parse_decimal_raw_type(raw)
+    if decimal_type is not None:
+        precision, scale = decimal_type
+        return f"DECIMAL({precision},{scale})"
     return raw
 
 

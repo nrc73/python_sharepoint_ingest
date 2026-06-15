@@ -180,6 +180,13 @@ def validate_source_against_destination(
                 )
 
         if source_family == "numeric" and dest_family == "numeric":
+            # SQL Server reports approximate numeric FLOAT/REAL metadata with
+            # numeric_scale=0 (and FLOAT precision commonly 53).  That scale is
+            # storage metadata, not a constraint that fractional source values
+            # must have zero decimal places.  Keep precision/scale enforcement
+            # for exact numeric types only.
+            if dest_type.lower() in {"float", "real"}:
+                continue
             precision = dest_meta.get("numeric_precision")
             scale = dest_meta.get("numeric_scale")
             if precision is not None:

@@ -36,6 +36,9 @@ from tools.discover_new_ingestion import (
     _list_folders_to_depth,
     _build_profile_candidate,
     _parse,
+    _finalize_type,
+    _infer_series,
+    _merge_types,
     _print_group_sql,
     _read_file_sheets,
     _safe_suffix_from_file_name,
@@ -404,6 +407,50 @@ def test_list_folders_to_depth_non_positive_returns_empty() -> None:
     sp = _FolderGraphStub({"/root": ["/root/a"]})
 
     assert _list_folders_to_depth(sp, "/root", max_depth=0) == []
+
+
+# ---------------------------------------------------------------------------
+# Type inference
+# ---------------------------------------------------------------------------
+
+
+def test_infer_series_uses_decimal_for_simple_fractional_values() -> None:
+    raw_type = _infer_series(pd.Series(["3.1", "3.2"]))
+
+    assert raw_type == "DECIMAL:18:1"
+    assert _finalize_type(raw_type) == "DECIMAL(18,1)"
+
+
+def test_infer_series_uses_decimal_up_to_five_decimal_places() -> None:
+    raw_type = _infer_series(pd.Series(["1.23456", "99.10000"]))
+
+    assert raw_type == "DECIMAL:18:5"
+    assert _finalize_type(raw_type) == "DECIMAL(18,5)"
+
+
+def test_infer_series_uses_float_when_scale_exceeds_five_decimal_places() -> None:
+    assert _infer_series(pd.Series(["1.234567", "2.000001"])) == "FLOAT"
+
+
+def test_merge_types_promotes_int_and_decimal_to_decimal() -> None:
+    raw_type = _merge_types("INT", "DECIMAL:18:2")
+
+    assert raw_type == "DECIMAL:18:2"
+    assert _finalize_type(raw_type) == "DECIMAL(18,2)"
+
+
+def test_infer_series_detects_csv_datetime_text_with_double_space_and_ampm() -> None:
+    raw_type = _infer_series(
+        pd.Series(["4/1/2026  12:00:00 AM", "4/2/2026  01:30:00 PM"])
+    )
+
+    assert raw_type == "DATETIME2(3)"
+
+
+def test_infer_series_detects_csv_date_only_text_as_date() -> None:
+    raw_type = _infer_series(pd.Series(["4/1/2026", "4/2/2026"]))
+
+    assert raw_type == "DATE"
 
 
 # ---------------------------------------------------------------------------

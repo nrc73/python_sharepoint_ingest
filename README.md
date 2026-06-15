@@ -70,30 +70,33 @@ For detailed pytest usage guidance (what it covers, when to run it, scenario-bas
 
 ## Source → pandas → SQL destination type mapping (CSV / Excel / Parquet)
 
-This is the simplified type reference used when validating source files against SQL destination table columns.
+This is the simplified type reference used when validating source files against SQL destination table columns and when using the DEV-only discovery helper to propose new destination schemas.
 
 | Source value shape (CSV/Excel/Parquet) | Typical pandas dtype | Recommended SQL destination type(s) |
 |---|---|---|
 | Whole numbers (`1`, `200`, `-5`) | `int64` / `Int64` | `INT`, `BIGINT`, `SMALLINT` |
-| Decimal numbers (`10.5`, `99.99`) | `float64` | `DECIMAL(p,s)`, `NUMERIC(p,s)`, `FLOAT` |
+| Decimal numbers (`10.5`, `99.99`, `3.1`) | `float64` / `object` text | Prefer `DECIMAL(p,s)` / `NUMERIC(p,s)` for business decimals; reserve `FLOAT` / `REAL` for approximate values or scale > 5 |
 | True/False flags (`true/false`, `1/0`) | `bool` / `boolean` | `BIT` |
-| Dates only (`2026-05-25`) | `datetime64[ns]` | `DATE` |
-| Date + time (`2026-05-25 14:30:00`) | `datetime64[ns]` | `DATETIME`, `DATETIME2` |
+| Dates only (`2026-05-25`, `4/1/2026`) | `datetime64[ns]` or `object` text before normalization | `DATE` |
+| Date + time (`2026-05-25 14:30:00`, `4/1/2026  12:00:00 AM`) | `datetime64[ns]` or `object` text before normalization | `DATETIME2(3)` / `DATETIME2(7)`, `DATETIME` |
 | Text / codes (`AU`, `CUST001`, free text) | `object` / `string` | `VARCHAR(n)`, `NVARCHAR(n)`, `VARCHAR(MAX)` |
 | UUID-like text | `object` / `string` | `UNIQUEIDENTIFIER` (if strictly UUID), else `VARCHAR` |
 | Binary payloads (rare in these ingestions) | `object` / bytes-like | `VARBINARY` |
 
 ### Format notes by source type
 
-- **CSV**: values are read as text first; numeric/date interpretation depends on parsing + normalization.
+- **CSV**: values are read by pandas and may arrive as numeric dtypes or text.  The discovery helper profiles text values and now recognises common date/datetime formats such as `4/1/2026  12:00:00 AM`.
 - **Excel**: dates may arrive as true Excel date cells *or* text-looking dates. Date-like text is validated/warned.
 - **Parquet**: usually carries stronger native typing, so pandas dtypes are often closest to final SQL types.
+- **Discovery decimal rule**: fractional numeric values with maximum observed scale up to 5 decimal places are proposed as `DECIMAL(p,s)`; scale greater than 5 is proposed as `FLOAT`.
+- **Runtime validation rule**: exact SQL numeric types (`DECIMAL`, `NUMERIC`, integer types, money types) enforce precision/scale checks. Approximate SQL numeric types (`FLOAT`, `REAL`) do not treat SQL Server's reported `numeric_scale=0` as a fractional-value restriction.
 
 ### Destination system fields (not expected in source files)
 
 The framework manages these destination fields automatically when present:
 
-- `sp_ingest_load_dt` (`DATETIME`)
+- `sp_ingest_load_dt` (`DATETIME2(7)`)
+- `audit_id` (`BIGINT NULL`)
 - `__$batch_id` (`INT NULL`)
 - `__$job_instance_id` (`INT NULL`)
 
@@ -327,6 +330,8 @@ Notes:
 - `--env` only accepts `dev`
 - running against non-dev environments is blocked with a fail-fast error
 - for SharePoint paths, pass a folder under the `Documents` library (not a library name as a root)
+- profiling scans all rows in discovered files to infer SQL types; common business decimals are emitted as `DECIMAL(p,s)` when scale is <= 5 and as `FLOAT` only for higher-scale approximate values
+- CSV-style date/datetime text such as `4/1/2026  12:00:00 AM` is inferred as `DATETIME2(3)`; date-only text is inferred as `DATE`
 
 7) Validate setup
 

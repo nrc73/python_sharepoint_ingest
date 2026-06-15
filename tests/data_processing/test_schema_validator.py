@@ -120,6 +120,24 @@ def test_schema_validator_numeric_within_precision_scale_has_no_numeric_exceeded
     assert "NUMERIC_SCALE_EXCEEDED" not in codes
 
 
+def test_schema_validator_allows_fractional_values_for_float_destination_metadata() -> None:
+    source = pd.DataFrame({"schema_version": [3.1, 3.2]})
+    destination_columns = [
+        {
+            "column_name": "schema_version",
+            "data_type": "float",
+            "character_maximum_length": None,
+            "numeric_precision": 53,
+            "numeric_scale": 0,
+        }
+    ]
+
+    issues = validate_source_against_destination(source, destination_columns)
+    codes = {i.code for i in issues}
+    assert "NUMERIC_SCALE_EXCEEDED" not in codes
+    assert "NUMERIC_PRECISION_EXCEEDED" not in codes
+
+
 def test_schema_validator_ignores_managed_destination_columns_for_missing_check() -> None:
     source = pd.DataFrame(
         {
