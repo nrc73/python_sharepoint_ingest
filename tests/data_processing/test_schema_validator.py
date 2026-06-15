@@ -138,6 +138,67 @@ def test_schema_validator_allows_fractional_values_for_float_destination_metadat
     assert "NUMERIC_PRECISION_EXCEEDED" not in codes
 
 
+def test_schema_validator_accepts_bit_like_text_for_bit_destination() -> None:
+    """CSV object columns inferred as BIT by discovery should validate as BIT at runtime."""
+    source = pd.DataFrame(
+        {
+            "child_dependant_cover": ["Y", "N", "yes", "no", "1", "0", None],
+        }
+    )
+    destination_columns = [
+        {
+            "column_name": "child_dependant_cover",
+            "data_type": "bit",
+            "character_maximum_length": None,
+        }
+    ]
+
+    issues = validate_source_against_destination(source, destination_columns)
+    codes = {i.code for i in issues}
+
+    assert "TYPE_MISMATCH" not in codes
+
+
+def test_schema_validator_rejects_decimal_text_for_scale_zero_destination_even_when_whole_number() -> None:
+    """Values like '1.0' are decimals and require destination scale >= 1."""
+    source = pd.DataFrame({"coverage_number_of_adults": ["1.0", "2.00", "0"]})
+    destination_columns = [
+        {
+            "column_name": "coverage_number_of_adults",
+            "data_type": "decimal",
+            "character_maximum_length": None,
+            "numeric_precision": 10,
+            "numeric_scale": 0,
+        }
+    ]
+
+    issues = validate_source_against_destination(source, destination_columns)
+    codes = {i.code for i in issues}
+
+    assert "TYPE_MISMATCH" not in codes
+    assert "NUMERIC_SCALE_EXCEEDED" in codes
+    assert "NUMERIC_PRECISION_EXCEEDED" not in codes
+
+
+def test_schema_validator_rejects_true_fractional_text_for_scale_zero_destination() -> None:
+    source = pd.DataFrame({"coverage_number_of_adults": ["1.5", "2.0"]})
+    destination_columns = [
+        {
+            "column_name": "coverage_number_of_adults",
+            "data_type": "decimal",
+            "character_maximum_length": None,
+            "numeric_precision": 10,
+            "numeric_scale": 0,
+        }
+    ]
+
+    issues = validate_source_against_destination(source, destination_columns)
+    codes = {i.code for i in issues}
+
+    assert "TYPE_MISMATCH" not in codes
+    assert "NUMERIC_SCALE_EXCEEDED" in codes
+
+
 def test_schema_validator_ignores_managed_destination_columns_for_missing_check() -> None:
     source = pd.DataFrame(
         {

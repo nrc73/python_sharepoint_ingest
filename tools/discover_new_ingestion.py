@@ -197,6 +197,10 @@ _CSV_TIME_TEXT_RE = re.compile(
     r"\d{1,2}:\d{2}(?::\d{2}(?:\.\d{1,7})?)?(?:\s*[AP]M)?",
     re.IGNORECASE,
 )
+_TEXT_SEMANTIC_COLUMN_RE = re.compile(
+    r"(^|_)(name|description|desc|text|label|comment)(_|$)",
+    re.IGNORECASE,
+)
 
 
 def _decimal_digit_profile(value: object) -> tuple[int, int] | None:
@@ -290,9 +294,9 @@ def _infer_series(series: pd.Series) -> str:
     if pd.api.types.is_integer_dtype(dtype):
         return "INT" if non_null.abs().max() <= 2_147_483_647 else "BIGINT"
     if pd.api.types.is_float_dtype(dtype):
-        rounded = non_null.round(0)
-        if (non_null - rounded).abs().max() < 1e-9:
-            return "INT" if non_null.abs().max() <= 2_147_483_647 else "BIGINT"
+        # Preserve decimal semantics for float source columns.  Values such as
+        # 1.0/2.0 must produce DECIMAL(..., 1), not INT, because the source file
+        # explicitly contains decimal values.
         return _decimal_type_for_values(non_null)
     if pd.api.types.is_datetime64_any_dtype(dtype):
         has_time = any(t.hour or t.minute or t.second for t in non_null.dt.time)
@@ -300,6 +304,12 @@ def _infer_series(series: pd.Series) -> str:
 
     # Object / string
     str_vals = non_null.astype(str)
+    # Name/description-style columns are business text even if a particular file
+    # happens to contain only numeric-looking values (e.g. ``short_name = 1.0``).
+    # Without this guard discovery can generate a numeric destination column that
+    # is semantically wrong and fragile for subsequent files.
+    if _TEXT_SEMANTIC_COLUMN_RE.search(str(series.name or "")):
+        return f"VARCHAR:{int(str_vals.str.len().max())}"
     # Try datetime
     try:
         inferred_datetime = _infer_datetime_text_type(str_vals)
@@ -311,6 +321,8 @@ def _infer_series(series: pd.Series) -> str:
     try:
         nums = pd.to_numeric(str_vals, errors="coerce")
         if nums.notna().all():
+            if str_vals.str.strip().str.contains(r"[\.eE]", regex=True).any():
+                return _decimal_type_for_values(str_vals)
             if (nums == nums.round(0)).all():
                 return "INT" if nums.abs().max() <= 2_147_483_647 else "BIGINT"
             return _decimal_type_for_values(str_vals)

@@ -421,6 +421,20 @@ def test_infer_series_uses_decimal_for_simple_fractional_values() -> None:
     assert _finalize_type(raw_type) == "DECIMAL(18,1)"
 
 
+def test_infer_series_uses_decimal_for_decimal_text_with_zero_fraction() -> None:
+    raw_type = _infer_series(pd.Series(["1.0", "2.0"]))
+
+    assert raw_type == "DECIMAL:18:1"
+    assert _finalize_type(raw_type) == "DECIMAL(18,1)"
+
+
+def test_infer_series_uses_decimal_for_float_values_with_zero_fraction() -> None:
+    raw_type = _infer_series(pd.Series([1.0, 2.0]))
+
+    assert raw_type == "DECIMAL:18:1"
+    assert _finalize_type(raw_type) == "DECIMAL(18,1)"
+
+
 def test_infer_series_uses_decimal_up_to_five_decimal_places() -> None:
     raw_type = _infer_series(pd.Series(["1.23456", "99.10000"]))
 
@@ -451,6 +465,12 @@ def test_infer_series_detects_csv_date_only_text_as_date() -> None:
     raw_type = _infer_series(pd.Series(["4/1/2026", "4/2/2026"]))
 
     assert raw_type == "DATE"
+
+
+def test_infer_series_keeps_name_like_columns_as_text_when_values_look_numeric() -> None:
+    raw_type = _infer_series(pd.Series(["1.0", "2.0"], name="short_name"))
+
+    assert raw_type == "VARCHAR:3"
 
 
 # ---------------------------------------------------------------------------

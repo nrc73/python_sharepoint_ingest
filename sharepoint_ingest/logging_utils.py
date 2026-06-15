@@ -29,7 +29,7 @@ def _cleanup_old_logs(log_dir: str = "logs", max_files: int = 10) -> None:
             continue
 
 
-def configure_logging(level: str = "INFO") -> logging.Logger:
+def configure_logging(level: str = "INFO", console_level: str | None = None) -> logging.Logger:
     os.makedirs("logs", exist_ok=True)
 
     logger = logging.getLogger("sharepoint_ingestion")
@@ -42,6 +42,8 @@ def configure_logging(level: str = "INFO") -> logging.Logger:
     )
 
     console_handler = logging.StreamHandler()
+    if console_level:
+        console_handler.setLevel(getattr(logging, console_level.upper(), logging.ERROR))
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 

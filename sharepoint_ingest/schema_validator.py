@@ -16,6 +16,8 @@ MANAGED_DESTINATION_COLUMNS = {
     "__$job_instance_id",
 }
 
+_BIT_TEXT_VALUES = {"0", "1", "true", "false", "t", "f", "yes", "no", "y", "n"}
+
 
 def _normalize(name: str) -> str:
     return name.strip().lower()
@@ -48,6 +50,64 @@ def _pandas_type_family(series: pd.Series) -> str:
     return "string"
 
 
+def _non_empty_text_values(series: pd.Series) -> pd.Series:
+    """Return non-null, non-blank source values as stripped strings."""
+    values = series.dropna().astype(str).str.strip()
+    return values[values != ""]
+
+
+def _all_text_values_numeric(values: pd.Series) -> bool:
+    if values.empty:
+        return False
+    try:
+        parsed = pd.to_numeric(values, errors="coerce")
+    except Exception:
+        return False
+    return bool(parsed.notna().all())
+
+
+def _all_text_values_datetime(values: pd.Series) -> bool:
+    if values.empty:
+        return False
+    try:
+        parsed = pd.to_datetime(values, errors="coerce")
+    except Exception:
+        return False
+    return bool(parsed.notna().all())
+
+
+def _all_text_values_bit_like(values: pd.Series) -> bool:
+    if values.empty:
+        return False
+    return set(values.str.lower().unique()) <= _BIT_TEXT_VALUES
+
+
+def _source_type_family_for_destination(series: pd.Series, destination_family: str) -> str:
+    """Return the source type family used for validation.
+
+    Pandas reads many CSV columns as ``object`` even when every non-empty value is
+    semantically numeric, boolean-like, or datetime-like.  Discovery performs
+    semantic inference over those string values; runtime validation must do the
+    same or a table generated from a file can reject that exact same file.
+    """
+    native_family = _pandas_type_family(series)
+    if native_family != "string":
+        return native_family
+
+    values = _non_empty_text_values(series)
+    if values.empty:
+        return "string"
+
+    if destination_family == "bool" and _all_text_values_bit_like(values):
+        return "bool"
+    if destination_family == "numeric" and _all_text_values_numeric(values):
+        return "numeric"
+    if destination_family == "datetime" and _all_text_values_datetime(values):
+        return "datetime"
+
+    return "string"
+
+
 def _safe_max_string_length(series: pd.Series) -> int:
     non_null = series.dropna()
     if non_null.empty:
@@ -64,6 +124,9 @@ def _numeric_digit_profile(value: object) -> tuple[int, int] | None:
     try:
         dec = Decimal(str(value).strip())
     except (InvalidOperation, ValueError):
+        return None
+
+    if not dec.is_finite():
         return None
 
     # normalized tuple: sign, digits, exponent
@@ -150,11 +213,10 @@ def validate_source_against_destination(
     for key in shared_keys:
         source_name = source_map[key]
         source_series = source_df[source_name]
-        source_family = _pandas_type_family(source_series)
-
         dest_meta = dest_map[key]
         dest_type = str(dest_meta.get("data_type") or "")
         dest_family = _column_type_family(dest_type)
+        source_family = _source_type_family_for_destination(source_series, dest_family)
 
         if dest_family in {"numeric", "datetime", "bool"} and source_family != dest_family:
             issues.append(

@@ -63,6 +63,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Enable verbose logs (equivalent to LOG_LEVEL=DEBUG)",
     )
     parser.add_argument(
+        "--supress-warnings",
+        "--suppress-warnings",
+        action="store_true",
+        dest="supress_warnings",
+        help="Suppress non-error console logs; file logs still use the configured log level.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate SQL/SharePoint connectivity and selected config filters without loading data",
@@ -204,7 +211,8 @@ def run(argv: Optional[list[str]] = None) -> int:
     settings = load_settings(env_override=args.env)
     _validate_prod_guard_rails(settings, args.ingestion_scope)
     log_level = "DEBUG" if args.verbose else settings.log_level
-    logger = configure_logging(log_level)
+    console_level = "ERROR" if args.supress_warnings else None
+    logger = configure_logging(log_level, console_level=console_level)
 
     logger.info("Starting SharePoint ingestion in env='%s'", settings.env_name)
 
