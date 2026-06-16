@@ -37,8 +37,19 @@ from sharepoint_ingest.file_processors import (
     read_excel_via_graph,
     read_parquet_from_bytes,
 )
+from sharepoint_ingest.ingestion._audit_lifecycle import (
+    AuditDestination,
+    AuditLifecycleRecorder,
+    AuditMetrics,
+)
+from sharepoint_ingest.ingestion._chunk_pipeline import (
+    ChunkValidationTracker,
+    CrossChunkDuplicateKeyTracker,
+    prepare_ingestion_chunk,
+)
 from sharepoint_ingest.ingestion._datetime_utils import (
     collect_csv_date_order_evidence,
+    column_contains_non_date_text,
     convert_series_to_datetime,
     destination_datetime_columns,
     detect_excel_datetime_text_issues,
@@ -121,6 +132,7 @@ class IngestionEngine:
         self.sharepoint_client = sharepoint_client
         self.logger = logger
         self.notifier = EmailNotifier(settings.email)
+        self._audit_recorder = AuditLifecycleRecorder(self.sql_client, self.logger)
         self._last_file_rows_scanned: Optional[int] = None
         self._last_file_validation_error_count: int = 0
         self._current_file_memory_peak_mb: Optional[float] = None
@@ -205,6 +217,15 @@ class IngestionEngine:
         database = self._audit_destination_database(config, ingest_stg_only=ingest_stg_only) or "unknown-db"
         table = self._audit_destination_table(config, ingest_stg_only=ingest_stg_only) or "unknown-table"
         return f"destination={database}.{table}"
+
+    def _audit_destination(
+        self, config: "IngestionConfig", *, ingest_stg_only: bool = False
+    ) -> AuditDestination:
+        """Return resolved destination values for audit rows."""
+        return AuditDestination(
+            database=self._audit_destination_database(config, ingest_stg_only=ingest_stg_only),
+            table=self._audit_destination_table(config, ingest_stg_only=ingest_stg_only),
+        )
 
     def _staging_primary_key_columns(self, config: "IngestionConfig") -> list[str]:
         """Return primary-key columns from the configured staging table only."""
@@ -521,40 +542,26 @@ class IngestionEngine:
                 self.logger.exception(err)
                 result.errors.append(err)
                 result.files_failed += 1
-                try:
-                    self.sql_client.insert_audit_record(
-                        config_id=config.id,
-                        workflow_id=config.workflow_id,
-                        process_id=config.process_id,
-                        file_name=None,
-                        status="FAILED",
-                        records_loaded=0,
-                        message=err,
+                validation_memory_peak = self._capture_memory_peak_mb()
+                self._audit_recorder.best_effort_failure(
+                    config,
+                    file_name=None,
+                    message=err,
+                    metrics=AuditMetrics(
                         rows_scanned=0,
                         validation_error_count=0,
-                        memory_peak_mb=self._capture_memory_peak_mb(),
+                        memory_peak_mb=validation_memory_peak,
                         duration_seconds=0,
-                        ingestion_scope=config.ingestion_scope,
-                        is_test_data=config.test_data_enabled,
-                        destination_database=self._audit_destination_database(
-                            config, ingest_stg_only=ingest_stg_only
-                        ),
-                        destination_table=self._audit_destination_table(
-                            config, ingest_stg_only=ingest_stg_only
-                        ),
-                    )
-                except Exception:
-                    self.logger.warning(
-                        "Config id=%s could not create FAILED audit row for staging-only validation",
-                        config.id,
-                        exc_info=True,
-                    )
+                    ),
+                    destination=self._audit_destination(config, ingest_stg_only=ingest_stg_only),
+                    warning_context="staging-only validation",
+                )
                 self._notify_failure(
                     config,
                     err,
                     file_name=None,
                     rows_scanned=0,
-                    memory_peak_mb=self._capture_memory_peak_mb(),
+                    memory_peak_mb=validation_memory_peak,
                     duration_seconds=0,
                     ingest_stg_only=ingest_stg_only,
                 )
@@ -621,37 +628,20 @@ class IngestionEngine:
             self._reset_file_telemetry()
             started = time.perf_counter()
             self._capture_memory_peak_mb()
-            audit_id: Optional[int] = None
-
-            try:
-                audit_id = self.sql_client.insert_audit_record(
-                    config_id=config.id,
-                    workflow_id=config.workflow_id,
-                    process_id=config.process_id,
-                    file_name=item.name,
-                    status="STARTED",
-                    records_loaded=0,
-                    message=None,
+            audit_destination = self._audit_destination(
+                config, ingest_stg_only=ingest_stg_only
+            )
+            audit_id = self._audit_recorder.start_file(
+                config,
+                file_name=item.name,
+                metrics=AuditMetrics(
                     rows_scanned=0,
                     validation_error_count=0,
                     memory_peak_mb=self._capture_memory_peak_mb(),
                     duration_seconds=None,
-                    ingestion_scope=config.ingestion_scope,
-                    is_test_data=config.test_data_enabled,
-                    destination_database=self._audit_destination_database(
-                        config, ingest_stg_only=ingest_stg_only
-                    ),
-                    destination_table=self._audit_destination_table(
-                        config, ingest_stg_only=ingest_stg_only
-                    ),
-                )
-            except Exception:
-                self.logger.warning(
-                    "Config id=%s could not create STARTED audit row for file %s",
-                    config.id,
-                    item.name,
-                    exc_info=True,
-                )
+                ),
+                destination=audit_destination,
+            )
 
             try:
                 force_append_for_file = (
@@ -669,138 +659,43 @@ class IngestionEngine:
                 result.files_processed += 1
                 result.rows_loaded += row_count
 
-                if audit_id is not None:
-                    updated = self.sql_client.update_audit_record(
-                        audit_id=audit_id,
-                        status="SUCCESS",
-                        records_loaded=int(row_count or 0),
-                        message=None,
+                self._audit_recorder.finalise_file(
+                    config,
+                    audit_id=audit_id,
+                    file_name=item.name,
+                    status="SUCCESS",
+                    records_loaded=int(row_count or 0),
+                    message=None,
+                    metrics=AuditMetrics(
                         rows_scanned=self._last_file_rows_scanned or 0,
                         validation_error_count=self._last_file_validation_error_count,
                         memory_peak_mb=self._capture_memory_peak_mb(),
                         duration_seconds=round(time.perf_counter() - started, 2),
-                        ingestion_scope=config.ingestion_scope,
-                        is_test_data=config.test_data_enabled,
-                        destination_database=self._audit_destination_database(
-                            config, ingest_stg_only=ingest_stg_only
-                        ),
-                        destination_table=self._audit_destination_table(
-                            config, ingest_stg_only=ingest_stg_only
-                        ),
-                    )
-                    if not updated:
-                        self.sql_client.insert_audit_record(
-                            config_id=config.id,
-                            workflow_id=config.workflow_id,
-                            process_id=config.process_id,
-                            file_name=item.name,
-                            status="SUCCESS",
-                            records_loaded=int(row_count or 0),
-                            message=None,
-                            rows_scanned=self._last_file_rows_scanned or 0,
-                            validation_error_count=self._last_file_validation_error_count,
-                            memory_peak_mb=self._capture_memory_peak_mb(),
-                            duration_seconds=round(time.perf_counter() - started, 2),
-                            ingestion_scope=config.ingestion_scope,
-                            is_test_data=config.test_data_enabled,
-                            destination_database=self._audit_destination_database(
-                                config, ingest_stg_only=ingest_stg_only
-                            ),
-                            destination_table=self._audit_destination_table(
-                                config, ingest_stg_only=ingest_stg_only
-                            ),
-                        )
-                else:
-                    self.sql_client.insert_audit_record(
-                        config_id=config.id,
-                        workflow_id=config.workflow_id,
-                        process_id=config.process_id,
-                        file_name=item.name,
-                        status="SUCCESS",
-                        records_loaded=int(row_count or 0),
-                        message=None,
-                        rows_scanned=self._last_file_rows_scanned or 0,
-                        validation_error_count=self._last_file_validation_error_count,
-                        memory_peak_mb=self._capture_memory_peak_mb(),
-                        duration_seconds=round(time.perf_counter() - started, 2),
-                        ingestion_scope=config.ingestion_scope,
-                        is_test_data=config.test_data_enabled,
-                        destination_database=self._audit_destination_database(
-                            config, ingest_stg_only=ingest_stg_only
-                        ),
-                        destination_table=self._audit_destination_table(
-                            config, ingest_stg_only=ingest_stg_only
-                        ),
-                    )
+                    ),
+                    destination=audit_destination,
+                )
             except Exception as exc:  # pragma: no cover - integration path
                 err = f"Config {config.id} failed for file {item.name}: {exc}"
                 self.logger.exception(err)
                 result.errors.append(err)
                 result.files_failed += 1
-
-                if audit_id is not None:
-                    updated = self.sql_client.update_audit_record(
-                        audit_id=audit_id,
-                        status="FAILED",
-                        records_loaded=0,
-                        message=err,
+                failure_memory_peak = self._capture_memory_peak_mb()
+                failure_duration = round(time.perf_counter() - started, 2)
+                self._audit_recorder.finalise_file(
+                    config,
+                    audit_id=audit_id,
+                    file_name=item.name,
+                    status="FAILED",
+                    records_loaded=0,
+                    message=err,
+                    metrics=AuditMetrics(
                         rows_scanned=self._last_file_rows_scanned or 0,
                         validation_error_count=self._last_file_validation_error_count,
-                        memory_peak_mb=self._capture_memory_peak_mb(),
-                        duration_seconds=round(time.perf_counter() - started, 2),
-                        ingestion_scope=config.ingestion_scope,
-                        is_test_data=config.test_data_enabled,
-                        destination_database=self._audit_destination_database(
-                            config, ingest_stg_only=ingest_stg_only
-                        ),
-                        destination_table=self._audit_destination_table(
-                            config, ingest_stg_only=ingest_stg_only
-                        ),
-                    )
-                    if not updated:
-                        self.sql_client.insert_audit_record(
-                            config_id=config.id,
-                            workflow_id=config.workflow_id,
-                            process_id=config.process_id,
-                            file_name=item.name,
-                            status="FAILED",
-                            records_loaded=0,
-                            message=err,
-                            rows_scanned=self._last_file_rows_scanned or 0,
-                            validation_error_count=self._last_file_validation_error_count,
-                            memory_peak_mb=self._capture_memory_peak_mb(),
-                            duration_seconds=round(time.perf_counter() - started, 2),
-                            ingestion_scope=config.ingestion_scope,
-                            is_test_data=config.test_data_enabled,
-                            destination_database=self._audit_destination_database(
-                                config, ingest_stg_only=ingest_stg_only
-                            ),
-                            destination_table=self._audit_destination_table(
-                                config, ingest_stg_only=ingest_stg_only
-                            ),
-                        )
-                else:
-                    self.sql_client.insert_audit_record(
-                        config_id=config.id,
-                        workflow_id=config.workflow_id,
-                        process_id=config.process_id,
-                        file_name=item.name,
-                        status="FAILED",
-                        records_loaded=0,
-                        message=err,
-                        rows_scanned=self._last_file_rows_scanned or 0,
-                        validation_error_count=self._last_file_validation_error_count,
-                        memory_peak_mb=self._capture_memory_peak_mb(),
-                        duration_seconds=round(time.perf_counter() - started, 2),
-                        ingestion_scope=config.ingestion_scope,
-                        is_test_data=config.test_data_enabled,
-                        destination_database=self._audit_destination_database(
-                            config, ingest_stg_only=ingest_stg_only
-                        ),
-                        destination_table=self._audit_destination_table(
-                            config, ingest_stg_only=ingest_stg_only
-                        ),
-                    )
+                        memory_peak_mb=failure_memory_peak,
+                        duration_seconds=failure_duration,
+                    ),
+                    destination=audit_destination,
+                )
                 if failed_folder:
                     try:
                         self.sharepoint_client.move_file(
@@ -816,16 +711,16 @@ class IngestionEngine:
                     self._notify_pk_violation(
                         config, err, file_name=item.name,
                         rows_scanned=self._last_file_rows_scanned,
-                        memory_peak_mb=self._capture_memory_peak_mb(),
-                        duration_seconds=round(time.perf_counter() - started, 2),
+                        memory_peak_mb=failure_memory_peak,
+                        duration_seconds=failure_duration,
                         ingest_stg_only=ingest_stg_only,
                     )
                 else:
                     self._notify_failure(
                         config, err, file_name=item.name,
                         rows_scanned=self._last_file_rows_scanned,
-                        memory_peak_mb=self._capture_memory_peak_mb(),
-                        duration_seconds=round(time.perf_counter() - started, 2),
+                        memory_peak_mb=failure_memory_peak,
+                        duration_seconds=failure_duration,
                         ingest_stg_only=ingest_stg_only,
                     )
 
@@ -1013,7 +908,6 @@ class IngestionEngine:
 
         # ── Streaming duplicate-key tracker for APPEND/staging-only mode ─────
         # Resolve merge keys once so we can detect cross-chunk duplicates.
-        seen_key_tuples: set[tuple] = set()
         append_key_columns: list[str] = []
         if enforce_truncate_keys:
             append_key_columns = self._staging_primary_key_columns(config)
@@ -1023,24 +917,35 @@ class IngestionEngine:
             except Exception:
                 append_key_columns = []
 
-        aggregated_issues: list[ValidationIssue] = []
+        validation_tracker = ChunkValidationTracker(
+            enabled=config.schema_check_enabled,
+            destination_columns=destination_columns,
+            null_alert_threshold=self.settings.null_alert_threshold,
+        )
+        duplicate_tracker = CrossChunkDuplicateKeyTracker(
+            key_columns=(
+                append_key_columns
+                if (resolved_load_strategy == "APPEND" or enforce_truncate_keys)
+                else []
+            ),
+            table_name=config.staging_table_name,
+            violation_context="when appended",
+        )
 
         # ── 3. Single pass: transform → validate → staging load ───────────────
         for dataframe in chunk_iter:
             processed_any_chunk = True
             self._capture_memory_peak_mb()
-            dataframe = self._apply_column_mapping_if_present(dataframe, config)
-            dataframe = self._apply_ingestion_metadata(
-                dataframe, config,
+            dataframe = prepare_ingestion_chunk(
+                dataframe,
+                config=config,
                 destination_columns=destination_columns,
                 file_name=file_name,
                 source_kind="csv",
                 audit_id=audit_id,
-            )
-            dataframe = self._normalize_dataframe(
-                dataframe,
-                source_kind="csv",
-                destination_columns=destination_columns,
+                apply_column_mapping=self._apply_column_mapping_if_present,
+                apply_ingestion_metadata=self._apply_ingestion_metadata,
+                normalize_dataframe=self._normalize_dataframe,
                 date_order_hints=csv_date_order_hints,
             )
             self._capture_memory_peak_mb()
@@ -1062,59 +967,18 @@ class IngestionEngine:
             )
 
             # ── Per-chunk schema validation (every chunk, not just first) ─────
-            if config.schema_check_enabled:
-                chunk_issues = validate_source_against_destination(
-                    source_df=dataframe,
-                    destination_columns=destination_columns,
-                    null_alert_threshold=self.settings.null_alert_threshold,
+            validation_tracker.validate(dataframe)
+            blocking_errors = validation_tracker.blocking_errors
+            if blocking_errors:
+                self._publish_validation_issues(
+                    config, validation_tracker.issues, ingest_stg_only=ingest_stg_only
                 )
-                if chunk_issues:
-                    aggregated_issues.extend(chunk_issues)
-
-            if aggregated_issues:
-                blocking_errors = [
-                    i for i in aggregated_issues if i.severity.upper() == "ERROR"
-                ]
-                if blocking_errors:
-                    self._publish_validation_issues(
-                        config, aggregated_issues, ingest_stg_only=ingest_stg_only
-                    )
-                    self._set_validation_error_count(len(blocking_errors))
-                    formatted = "; ".join(self._format_issue(i) for i in blocking_errors)
-                    raise ValueError(f"Schema validation failed: {formatted}")
+                self._set_validation_error_count(len(blocking_errors))
+                formatted = "; ".join(self._format_issue(i) for i in blocking_errors)
+                raise ValueError(f"Schema validation failed: {formatted}")
 
             # ── Streaming cross-chunk duplicate-key check ─────────────────────
-            if (resolved_load_strategy == "APPEND" or enforce_truncate_keys) and append_key_columns:
-                available_keys = [k for k in append_key_columns if k in dataframe.columns]
-                if available_keys:
-                    chunk_tuples = [
-                        tuple(row)
-                        for row in dataframe[available_keys].itertuples(index=False, name=None)
-                    ]
-                    # Within-chunk duplicates
-                    within_dup_mask = dataframe.duplicated(subset=available_keys, keep=False)
-                    # Cross-chunk duplicates (keys already seen in a prior chunk)
-                    cross_chunk_mask = pd.Series(
-                        [t in seen_key_tuples for t in chunk_tuples],
-                        index=dataframe.index,
-                    )
-                    dup_mask = within_dup_mask | cross_chunk_mask
-                    if dup_mask.any():
-                        dup_count = int(dup_mask.sum())
-                        sample_records = (
-                            dataframe.loc[dup_mask, available_keys]
-                            .drop_duplicates()
-                            .head(5)
-                            .to_dict(orient="records")
-                        )
-                        raise ValueError(
-                            f"PRIMARY_KEY_VIOLATION: File contains {dup_count} rows with "
-                            f"duplicate values on key column(s) {available_keys} for table "
-                            f"'{config.staging_table_name}'. This will cause a primary key "
-                            f"constraint violation when appended. "
-                            f"Sample duplicate key values: {sample_records}"
-                        )
-                    seen_key_tuples.update(chunk_tuples)
+            duplicate_tracker.check(dataframe)
 
             self._load_dataframe(
                 config, dataframe, first_chunk=first_chunk,
@@ -1136,14 +1000,11 @@ class IngestionEngine:
             first_chunk = False
 
         # ── Publish any remaining non-blocking validation results ─────────────
-        if aggregated_issues:
+        if validation_tracker.issues:
             self._publish_validation_issues(
-                config, aggregated_issues, ingest_stg_only=ingest_stg_only
+                config, validation_tracker.issues, ingest_stg_only=ingest_stg_only
             )
-            non_blocking_count = sum(
-                1 for i in aggregated_issues if i.severity.upper() != "ERROR"
-            )
-            self._set_validation_error_count(non_blocking_count)
+            self._set_validation_error_count(validation_tracker.non_blocking_count)
 
         if not processed_any_chunk and resolved_load_strategy == "TRUNCATE":
             self._stg_client.truncate_and_load(pd.DataFrame(), config.staging_table_name)
@@ -1230,16 +1091,25 @@ class IngestionEngine:
             load_strategy or config.load_strategy
         )
 
-        aggregated_issues: list[ValidationIssue] = []
         total_rows = 0
         total_rows_scanned = 0
         first_chunk = True
         processed_any_chunk = False
         enforce_truncate_keys = self._effective_stg_only(config, ingest_stg_only)
-        seen_key_tuples: set[tuple] = set()
         key_columns: list[str] = []
         if enforce_truncate_keys:
             key_columns = self._staging_primary_key_columns(config)
+
+        validation_tracker = ChunkValidationTracker(
+            enabled=config.schema_check_enabled,
+            destination_columns=destination_columns,
+            null_alert_threshold=self.settings.null_alert_threshold,
+        )
+        duplicate_tracker = CrossChunkDuplicateKeyTracker(
+            key_columns=key_columns if enforce_truncate_keys else [],
+            table_name=config.staging_table_name,
+            violation_context="during staging-only reload",
+        )
 
         self._log_sql_ingestion_progress(
             processed_rows=0, total_rows=total_file_rows, context=str(config.id)
@@ -1260,17 +1130,16 @@ class IngestionEngine:
             processed_any_chunk = True
             self._capture_memory_peak_mb()
 
-            dataframe = self._apply_column_mapping_if_present(dataframe, config)
-            dataframe = self._apply_ingestion_metadata(
-                dataframe, config,
+            dataframe = prepare_ingestion_chunk(
+                dataframe,
+                config=config,
                 destination_columns=destination_columns,
                 file_name=file_name,
                 source_kind="parquet",
                 audit_id=audit_id,
-            )
-            dataframe = self._normalize_dataframe(
-                dataframe, source_kind="parquet",
-                destination_columns=destination_columns,
+                apply_column_mapping=self._apply_column_mapping_if_present,
+                apply_ingestion_metadata=self._apply_ingestion_metadata,
+                normalize_dataframe=self._normalize_dataframe,
             )
             self._capture_memory_peak_mb()
 
@@ -1284,56 +1153,17 @@ class IngestionEngine:
                 unit="rows",
             )
 
-            if config.schema_check_enabled:
-                chunk_issues = validate_source_against_destination(
-                    source_df=dataframe,
-                    destination_columns=destination_columns,
-                    null_alert_threshold=self.settings.null_alert_threshold,
+            validation_tracker.validate(dataframe)
+            blocking_errors = validation_tracker.blocking_errors
+            if blocking_errors:
+                self._publish_validation_issues(
+                    config, validation_tracker.issues, ingest_stg_only=ingest_stg_only
                 )
-                if chunk_issues:
-                    aggregated_issues.extend(chunk_issues)
+                self._set_validation_error_count(len(blocking_errors))
+                formatted = "; ".join(self._format_issue(i) for i in blocking_errors)
+                raise ValueError(f"Schema validation failed: {formatted}")
 
-            if aggregated_issues:
-                blocking_errors = [
-                    i for i in aggregated_issues if i.severity.upper() == "ERROR"
-                ]
-                if blocking_errors:
-                    self._publish_validation_issues(
-                        config, aggregated_issues, ingest_stg_only=ingest_stg_only
-                    )
-                    self._set_validation_error_count(len(blocking_errors))
-                    formatted = "; ".join(self._format_issue(i) for i in blocking_errors)
-                    raise ValueError(f"Schema validation failed: {formatted}")
-
-            if enforce_truncate_keys and key_columns:
-                available_keys = [k for k in key_columns if k in dataframe.columns]
-                if available_keys:
-                    chunk_tuples = [
-                        tuple(row)
-                        for row in dataframe[available_keys].itertuples(index=False, name=None)
-                    ]
-                    within_dup_mask = dataframe.duplicated(subset=available_keys, keep=False)
-                    cross_chunk_mask = pd.Series(
-                        [t in seen_key_tuples for t in chunk_tuples],
-                        index=dataframe.index,
-                    )
-                    dup_mask = within_dup_mask | cross_chunk_mask
-                    if dup_mask.any():
-                        dup_count = int(dup_mask.sum())
-                        sample_records = (
-                            dataframe.loc[dup_mask, available_keys]
-                            .drop_duplicates()
-                            .head(5)
-                            .to_dict(orient="records")
-                        )
-                        raise ValueError(
-                            f"PRIMARY_KEY_VIOLATION: File contains {dup_count} rows with "
-                            f"duplicate values on key column(s) {available_keys} for table "
-                            f"'{config.staging_table_name}'. This will cause a primary key "
-                            f"constraint violation during staging-only reload. "
-                            f"Sample duplicate key values: {sample_records}"
-                        )
-                    seen_key_tuples.update(chunk_tuples)
+            duplicate_tracker.check(dataframe)
 
             self._load_dataframe(
                 config, dataframe,
@@ -1353,14 +1183,11 @@ class IngestionEngine:
             first_chunk = False
 
         # ── Publish any remaining (non-blocking) validation results ───────────
-        if aggregated_issues:
+        if validation_tracker.issues:
             self._publish_validation_issues(
-                config, aggregated_issues, ingest_stg_only=ingest_stg_only
+                config, validation_tracker.issues, ingest_stg_only=ingest_stg_only
             )
-            non_blocking_count = sum(
-                1 for i in aggregated_issues if i.severity.upper() != "ERROR"
-            )
-            self._set_validation_error_count(non_blocking_count)
+            self._set_validation_error_count(validation_tracker.non_blocking_count)
 
         if not processed_any_chunk:
             if resolved_load_strategy == "TRUNCATE":
@@ -1512,6 +1339,12 @@ class IngestionEngine:
         for source_col in normalized.columns:
             if source_col.strip().lower() not in dt_cols:
                 continue
+            # Pass-through guard: if ANY non-null value in the column cannot be
+            # parsed as a date (e.g. "Withdrawal due 01-Jul-26 00:00"), leave the
+            # entire column unchanged.  Partial conversion would corrupt mixed
+            # text+date columns by silently dropping the free-text rows as NaT.
+            if column_contains_non_date_text(normalized[source_col]):
+                continue
             normalized[source_col] = convert_series_to_datetime(
                 series=normalized[source_col],
                 source_kind=source_kind,
@@ -1554,6 +1387,11 @@ class IngestionEngine:
                 for source_col in chunk.columns:
                     key = source_col.strip().lower()
                     if key not in dt_cols:
+                        continue
+                    # Skip mixed text+date columns — they will be passed through
+                    # unchanged by _normalize_dataframe and must not be counted
+                    # as invalid date evidence here.
+                    if column_contains_non_date_text(chunk[source_col]):
                         continue
                     evidence = collect_csv_date_order_evidence(chunk[source_col])
                     if key in evidence_by_col:

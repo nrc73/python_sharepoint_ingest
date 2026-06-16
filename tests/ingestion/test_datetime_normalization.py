@@ -156,6 +156,107 @@ def test_destination_datetime_columns_excludes_framework_managed_audit_fields() 
     assert "sp_ingest_load_dt" not in result
 
 
+# ── Mixed text + date pass-through ───────────────────────────────────────────
+
+
+def test_csv_datetime_column_with_mixed_free_text_is_passed_through_unchanged() -> None:
+    """Column containing free-text rows must not be converted at all.
+
+    'Withdrawal due 01-Jul-26 00:00' cannot be parsed as a date, so the entire
+    column — including 'clean' rows like '4/1/2026 0:00' — must be left as
+    original strings.  Partial conversion would silently lose the text rows.
+    """
+    engine = make_engine()
+    source = pd.DataFrame(
+        {
+            "due_date": [
+                "Withdrawal due 01-Jul-26 00:00",
+                "4/1/2026 0:00",
+                None,
+                "Payment due 15-Aug-26",
+            ],
+            "amount": [100, 200, 300, 400],
+        }
+    )
+    dest_cols = [
+        {"column_name": "due_date", "data_type": "datetime"},
+        {"column_name": "amount", "data_type": "decimal"},
+    ]
+
+    normalized = engine._normalize_dataframe(source, source_kind="csv", destination_columns=dest_cols)
+
+    # Column must be completely unchanged — original strings preserved
+    assert list(normalized["due_date"]) == list(source["due_date"])
+    assert not pd.api.types.is_datetime64_any_dtype(normalized["due_date"])
+
+
+def test_csv_datetime_column_with_only_free_text_is_passed_through_unchanged() -> None:
+    """Column that is entirely free text (no parseable dates at all) passes through."""
+    engine = make_engine()
+    source = pd.DataFrame(
+        {"note_date": ["Overdue since July", "TBC", "On demand"], "id": [1, 2, 3]}
+    )
+    dest_cols = [{"column_name": "note_date", "data_type": "datetime"}]
+
+    normalized = engine._normalize_dataframe(source, source_kind="csv", destination_columns=dest_cols)
+
+    assert list(normalized["note_date"]) == ["Overdue since July", "TBC", "On demand"]
+
+
+def test_csv_datetime_column_with_all_parseable_dates_is_still_converted() -> None:
+    """A column where every non-null value is a parseable date is still converted."""
+    engine = make_engine()
+    source = pd.DataFrame({"txn_date": ["15/04/2026", "16/04/2026", None]})
+    dest_cols = [{"column_name": "txn_date", "data_type": "datetime"}]
+
+    normalized = engine._normalize_dataframe(source, source_kind="csv", destination_columns=dest_cols)
+
+    assert pd.api.types.is_datetime64_any_dtype(normalized["txn_date"])
+    assert str(normalized.loc[0, "txn_date"].date()) == "2026-04-15"
+    assert str(normalized.loc[1, "txn_date"].date()) == "2026-04-16"
+
+
+def test_mixed_text_date_column_does_not_raise_during_csv_pre_scan() -> None:
+    """The CSV date-order pre-scan must silently skip mixed text+date columns.
+
+    Previously the pre-scan would raise ValueError ('Invalid or mixed CSV date
+    values') for 'Withdrawal due 01-Jul-26 00:00' being an unrecognised format.
+    The fix is to skip the entire column in the pre-scan.
+    """
+    from io import BytesIO
+
+    from sharepoint_ingest.models import IngestionConfig
+
+    engine = make_engine()
+    csv_bytes = (
+        b"due_date,amount\n"
+        b"\"Withdrawal due 01-Jul-26 00:00\",100\n"
+        b"4/1/2026 0:00,200\n"
+    )
+    buffer = BytesIO(csv_bytes)
+    dest_cols = [{"column_name": "due_date", "data_type": "datetime"}]
+    config = IngestionConfig(
+        id=1,
+        sharepoint_base_url="https://example.sharepoint.com",
+        sharepoint_process_folder="/sites/test/Shared Documents/Inbox",
+        excel_tab_name="Sheet1",
+        sharepoint_process_archive_folder=None,
+        sharepoint_process_failed_folder=None,
+        process_frequency=None,
+        header_skip_rows=0,
+        check_source_dest_columns=False,
+        multi_file_ingest=False,
+        to_email_address=None,
+        process_id="p1",
+        workflow_id="wf1",
+        staging_table_name="sharepoint.test_table",
+    )
+
+    # Must not raise; mixed text+date column must be absent from the hints dict
+    hints = engine._infer_csv_datetime_order_hints(buffer, config, dest_cols)
+    assert "due_date" not in hints
+
+
 def test_detect_excel_datetime_stored_as_text_ignores_framework_managed_audit_fields() -> None:
     engine = make_engine()
     source = pd.DataFrame(

@@ -107,6 +107,37 @@ def is_date_like_text(text_value: str) -> bool:
     return bool(_DATE_LIKE_TEXT_RE.match(text_value.strip()))
 
 
+def column_contains_non_date_text(series: pd.Series) -> bool:
+    """Return *True* if *series* contains any non-null string that cannot be
+    parsed as a date/datetime value by pandas.
+
+    Use this guard before attempting datetime conversion so that columns mixing
+    free-text rows (e.g. ``"Withdrawal due 01-Jul-26 00:00"``) with numeric
+    date rows (e.g. ``"4/1/2026 0:00"``) are left entirely unchanged rather
+    than partially converted.  If *every* non-null string in the series is
+    parseable as a date the function returns *False* and conversion proceeds
+    normally.
+    """
+    for value in series:
+        if value is None:
+            continue
+        if isinstance(value, float) and pd.isna(value):
+            continue
+        if isinstance(value, (pd.Timestamp, datetime, date)):
+            continue
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        if not text:
+            continue
+        # Use pandas' mixed-format parser (introduced in pandas 2.0) which
+        # resolves the date format per-value and avoids the dayfirst=False
+        # UserWarning that fires for AU-style dates like "15/04/2026".
+        if pd.isna(pd.to_datetime(text, format="mixed", dayfirst=True, errors="coerce")):
+            return True
+    return False
+
+
 def _normalise_time_suffix(suffix: str) -> str | None:
     match = _TIME_SUFFIX_RE.match(suffix or "")
     if not match:
