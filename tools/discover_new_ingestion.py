@@ -59,6 +59,10 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from sharepoint_ingest.config import load_settings
+from sharepoint_ingest.ingestion._datetime_utils import (
+    collect_csv_date_order_evidence,
+    convert_series_to_datetime,
+)
 from sharepoint_ingest.keyvault_client import maybe_build_provider
 from sharepoint_ingest.main import _resolve_database_names, _resolve_sql_settings
 from sharepoint_ingest.sharepoint_client import SharePointClient
@@ -250,16 +254,27 @@ def _infer_datetime_text_type(str_vals: pd.Series) -> str | None:
     normalized = normalized[normalized != ""]
     if normalized.empty:
         return None
-    if not normalized.map(lambda v: bool(_CSV_DATE_TEXT_RE.match(v))).all():
-        return None
 
     # Collapse repeated spaces so values like "4/1/2026  12:00:00 AM" parse reliably.
     parse_values = normalized.map(lambda v: re.sub(r"\s+", " ", v))
-    parsed = parse_values.map(lambda v: pd.to_datetime(v, errors="coerce"))
+
+    evidence = collect_csv_date_order_evidence(parse_values)
+    if evidence.invalid_samples or evidence.values_count == 0:
+        return None
+    try:
+        dayfirst_hint = evidence.resolve_dayfirst(column_name=str(str_vals.name or ""))
+        parsed = convert_series_to_datetime(
+            parse_values,
+            source_kind="csv",
+            column_name=str(str_vals.name or ""),
+            date_order_hint=dayfirst_hint,
+        )
+    except Exception:
+        return None
     if parsed.isna().any():
         return None
 
-    has_explicit_time = parse_values.map(lambda v: bool(_CSV_TIME_TEXT_RE.search(v))).any()
+    has_explicit_time = evidence.has_time or parse_values.map(lambda v: bool(_CSV_TIME_TEXT_RE.search(v))).any()
     has_non_midnight_time = any(
         ts.hour != 0 or ts.minute != 0 or ts.second != 0 or ts.microsecond != 0
         for ts in parsed

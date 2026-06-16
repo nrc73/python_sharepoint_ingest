@@ -45,6 +45,26 @@ def test_datetime_column_infers_ambiguous_values_from_unambiguous_dmy_hints() ->
     assert str(normalized.loc[1, "txn_date"].date()) == "2026-04-03"
 
 
+def test_csv_datetime_column_infers_ambiguous_values_from_unambiguous_us_hints() -> None:
+    engine = make_engine()
+    source = pd.DataFrame({"txn_date": ["04/05/2026 0:00", "4/15/2026 0:00"]})
+    dest_cols = [{"column_name": "txn_date", "data_type": "datetime"}]
+
+    normalized = engine._normalize_dataframe(source, source_kind="csv", destination_columns=dest_cols)
+
+    assert str(normalized.loc[0, "txn_date"]) == "2026-04-05 00:00:00"
+    assert str(normalized.loc[1, "txn_date"]) == "2026-04-15 00:00:00"
+
+
+def test_csv_datetime_column_rejects_conflicting_au_and_us_hints() -> None:
+    engine = make_engine()
+    source = pd.DataFrame({"txn_date": ["15/04/2026", "4/16/2026"]})
+    dest_cols = [{"column_name": "txn_date", "data_type": "datetime"}]
+
+    with pytest.raises(ValueError, match="Conflicting CSV date formats"):
+        engine._normalize_dataframe(source, source_kind="csv", destination_columns=dest_cols)
+
+
 def test_bit_column_converts_strict_boolean_text_and_numbers() -> None:
     engine = make_engine()
     source = pd.DataFrame(

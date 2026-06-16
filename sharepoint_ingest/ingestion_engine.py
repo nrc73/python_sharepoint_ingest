@@ -38,6 +38,7 @@ from sharepoint_ingest.file_processors import (
     read_parquet_from_bytes,
 )
 from sharepoint_ingest.ingestion._datetime_utils import (
+    collect_csv_date_order_evidence,
     convert_series_to_datetime,
     destination_datetime_columns,
     detect_excel_datetime_text_issues,
@@ -983,6 +984,11 @@ class IngestionEngine:
         buffer = self.sharepoint_client.download_file_to_buffer(server_relative_url)
         self._capture_memory_peak_mb()
         destination_columns = self._stg_client.get_table_columns(config.staging_table_name)
+        csv_date_order_hints = self._infer_csv_datetime_order_hints(
+            buffer,
+            config,
+            destination_columns,
+        )
         chunk_iter = iter_csv_chunks_from_buffer(
             buffer,
             header_skip_rows=config.header_skip_rows,
@@ -1032,7 +1038,10 @@ class IngestionEngine:
                 audit_id=audit_id,
             )
             dataframe = self._normalize_dataframe(
-                dataframe, source_kind="csv", destination_columns=destination_columns
+                dataframe,
+                source_kind="csv",
+                destination_columns=destination_columns,
+                date_order_hints=csv_date_order_hints,
             )
             self._capture_memory_peak_mb()
 
@@ -1483,6 +1492,7 @@ class IngestionEngine:
         dataframe: pd.DataFrame,
         source_kind: str,
         destination_columns: list[dict],
+        date_order_hints: Optional[dict[str, bool | None]] = None,
     ) -> pd.DataFrame:
         normalized = dataframe.copy()
         normalized.columns = [str(col).strip() for col in normalized.columns]
@@ -1506,8 +1516,68 @@ class IngestionEngine:
                 series=normalized[source_col],
                 source_kind=source_kind,
                 column_name=source_col,
+                date_order_hint=(date_order_hints or {}).get(source_col.strip().lower()),
             )
         return normalized
+
+    def _infer_csv_datetime_order_hints(
+        self,
+        buffer,
+        config: IngestionConfig,
+        destination_columns: list[dict],
+    ) -> dict[str, bool | None]:
+        """Scan the full CSV once and infer date order for datetime columns.
+
+        Chunked ingestion normalises each chunk independently, so a US hint such
+        as ``4/15/2026 0:00`` in a later chunk must be collected before the first
+        chunk is loaded.  This pre-scan is intentionally validation-like: mixed
+        free text or conflicting AU/US hints fail before any partial SQL write.
+        """
+        dt_cols = destination_datetime_columns(destination_columns)
+        if not dt_cols:
+            try:
+                buffer.seek(0)
+            except Exception:
+                pass
+            return {}
+
+        evidence_by_col = {}
+        try:
+            buffer.seek(0)
+            for chunk in iter_csv_chunks_from_buffer(
+                buffer,
+                header_skip_rows=config.header_skip_rows,
+                chunk_size=self.settings.ingest_chunk_size_rows,
+            ):
+                chunk = self._apply_column_mapping_if_present(chunk, config)
+                chunk.columns = [str(col).strip() for col in chunk.columns]
+                for source_col in chunk.columns:
+                    key = source_col.strip().lower()
+                    if key not in dt_cols:
+                        continue
+                    evidence = collect_csv_date_order_evidence(chunk[source_col])
+                    if key in evidence_by_col:
+                        evidence_by_col[key].merge(evidence)
+                    else:
+                        evidence_by_col[key] = evidence
+
+            hints: dict[str, bool | None] = {}
+            for key, evidence in evidence_by_col.items():
+                if evidence.invalid_samples:
+                    samples = ", ".join(evidence.invalid_samples[:5])
+                    raise ValueError(
+                        f"Invalid or mixed CSV date values in datetime column '{key}'. "
+                        "Expected digit-only dates in yyyy-MM-dd, dd-MM-yyyy/dd/MM/yyyy, "
+                        "or MM-dd-yyyy/MM/dd/yyyy form. "
+                        f"Samples: {samples}"
+                    )
+                hints[key] = evidence.resolve_dayfirst(column_name=key)
+            return hints
+        finally:
+            try:
+                buffer.seek(0)
+            except Exception:
+                pass
 
     @classmethod
     def _destination_bit_columns(cls, destination_columns: list[dict]) -> set[str]:

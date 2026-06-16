@@ -79,6 +79,45 @@ def test_chunked_csv_handles_mixed_quoted_and_unquoted_fields() -> None:
     assert first_chunk.loc[1, "description"] == 'long string, with comma and "quoted" text'
 
 
+def test_chunked_csv_datetime_uses_full_file_us_hint_before_first_chunk_loads() -> None:
+    payload = (
+        b"id,txn_date\n"
+        b"1,04/05/2026 0:00\n"  # ambiguous: US hint later should make this 5-Apr, not 4-May
+        b"2,4/15/2026 0:00\n"
+    )
+    sp = DummySharePointClient(payload)
+
+    class CapturingSqlClient(DummySqlClient):
+        def __init__(self):
+            super().__init__()
+            self.loaded_chunks = []
+
+        def get_table_columns(self, table_name: str):
+            return [
+                {"column_name": "id", "data_type": "int"},
+                {"column_name": "txn_date", "data_type": "datetime"},
+            ]
+
+        def truncate_and_load(self, df, table_name: str) -> None:
+            self.loaded_chunks.append(df.copy())
+            super().truncate_and_load(df, table_name)
+
+        def append_load(self, df, table_name: str) -> None:
+            self.loaded_chunks.append(df.copy())
+            super().append_load(df, table_name)
+
+    sql = CapturingSqlClient()
+    engine = IngestionEngine(
+        make_settings(chunked=True, chunk_size=1), sql, sp, logging.getLogger("test")
+    )
+
+    rows = engine._process_single_file(make_config("TRUNCATE"), "/folder/file.csv", "file.csv")
+
+    assert rows == 2
+    assert str(sql.loaded_chunks[0].loc[0, "txn_date"]) == "2026-04-05 00:00:00"
+    assert str(sql.loaded_chunks[1].loc[1, "txn_date"]) == "2026-04-15 00:00:00"
+
+
 def test_chunked_csv_empty_file_truncate_reload_still_truncates() -> None:
     payload = b"id,value\n"
     sp = DummySharePointClient(payload)

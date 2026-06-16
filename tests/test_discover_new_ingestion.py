@@ -467,6 +467,32 @@ def test_infer_series_detects_csv_date_only_text_as_date() -> None:
     assert raw_type == "DATE"
 
 
+def test_infer_series_detects_us_csv_datetime_hint_without_month_name_format() -> None:
+    raw_type = _infer_series(
+        pd.Series(["4/5/2026 0:00", "4/15/2026 0:00"], name="txn_date")
+    )
+
+    assert raw_type == "DATETIME2(3)"
+
+
+def test_infer_series_detects_au_csv_date_hint_with_dash_separator() -> None:
+    raw_type = _infer_series(pd.Series(["04-05-2026", "15-04-2026"], name="txn_date"))
+
+    assert raw_type == "DATE"
+
+
+def test_infer_series_keeps_mixed_free_text_date_column_as_varchar() -> None:
+    raw_type = _infer_series(pd.Series(["4/15/2026", "about 4/16/2026"], name="notes"))
+
+    assert raw_type.startswith("VARCHAR:")
+
+
+def test_infer_series_keeps_conflicting_au_us_date_hints_as_varchar() -> None:
+    raw_type = _infer_series(pd.Series(["15/04/2026", "4/16/2026"], name="txn_date"))
+
+    assert raw_type.startswith("VARCHAR:")
+
+
 def test_infer_series_keeps_name_like_columns_as_text_when_values_look_numeric() -> None:
     raw_type = _infer_series(pd.Series(["1.0", "2.0"], name="short_name"))
 
