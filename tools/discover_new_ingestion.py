@@ -878,7 +878,8 @@ def _generate_create_table(
         )
 
     lines.append(",\n".join(parts))
-    lines.append(");")
+    lines.append(")")
+    lines.append("WITH (DATA_COMPRESSION = PAGE);")
     return "\n".join(lines)
 
 

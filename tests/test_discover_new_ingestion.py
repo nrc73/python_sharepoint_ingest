@@ -819,6 +819,7 @@ def test_generate_create_table_uses_sharepoint_schema_and_managed_columns() -> N
     )
 
     assert sql.startswith("CREATE TABLE [sharepoint].[orders] (")
+    assert sql.endswith("\nWITH (DATA_COMPRESSION = PAGE);")
     assert "CONSTRAINT [PK_orders]" in sql
     assert "PK_dest_" not in sql
     assert "[sp_ingest_load_dt]" in sql
