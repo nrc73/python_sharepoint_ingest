@@ -74,6 +74,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Validate SQL/SharePoint connectivity and selected config filters without loading data",
     )
+    parser.add_argument(
+        "--force-all-us-dates-to-au",
+        action="store_true",
+        help=(
+            "CSV only: treat all ambiguous numeric CSV dates as US month/day/year "
+            "source values before loading them into date/datetime destinations."
+        ),
+    )
     return parser
 
 
@@ -298,6 +306,7 @@ def run(argv: Optional[list[str]] = None) -> int:
             ingestion_scope=args.ingestion_scope,
             include_inactive=args.include_inactive,
             ingest_stg_only=args.ingest_stg_only,
+            force_all_us_dates_to_au=args.force_all_us_dates_to_au,
         )
 
         logger.info(

@@ -475,6 +475,15 @@ def test_infer_series_detects_us_csv_datetime_hint_without_month_name_format() -
     assert raw_type == "DATETIME2(3)"
 
 
+def test_infer_series_force_all_us_dates_to_au_keeps_ambiguous_csv_dates_as_date() -> None:
+    raw_type = _infer_series(
+        pd.Series(["1/5/2026", "2/5/2026"], name="txn_date"),
+        force_all_us_dates_to_au=True,
+    )
+
+    assert raw_type == "DATE"
+
+
 def test_infer_series_detects_au_csv_date_hint_with_dash_separator() -> None:
     raw_type = _infer_series(pd.Series(["04-05-2026", "15-04-2026"], name="txn_date"))
 
@@ -760,6 +769,28 @@ def test_parse_csv_mapping_rows_flag_enables_mapping_only_output() -> None:
     args = _parse(["--csv-mapping-rows"])
 
     assert args.csv_mapping_rows_only is True
+
+
+def test_parse_force_all_us_dates_to_au_flag() -> None:
+    args = _parse(["--force-all-us-dates-to-au"])
+
+    assert args.force_all_us_dates_to_au is True
+
+
+def test_build_profile_candidate_force_all_us_dates_to_au_profiles_csv_dates() -> None:
+    payload = b"id,txn_date\n1,1/5/2026\n2,2/5/2026\n"
+    sp = _DiscoveryGraphStub(payload)
+    fi = SimpleNamespace(name="orders.csv", server_relative_url="/folder/orders.csv")
+
+    candidate = _build_profile_candidate(
+        sp,
+        fi,
+        force_all_us_dates_to_au=True,
+    )
+
+    assert candidate is not None
+    assert candidate.file_kind == "csv"
+    assert candidate.combined_profile["txn_date"] == "DATE"
 
 
 def _print_group_sql_for_test(*, csv_mapping_rows_only: bool = False) -> None:

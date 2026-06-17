@@ -503,6 +503,7 @@ class IngestionEngine:
         ingestion_scope: Optional[str] = "real",
         include_inactive: bool = False,
         ingest_stg_only: bool = False,
+        force_all_us_dates_to_au: bool = False,
     ) -> IngestionSummary:
         configs = self.sql_client.fetch_ingestion_configs(
             process_id=process_id,
@@ -514,7 +515,11 @@ class IngestionEngine:
         summary = IngestionSummary(process_id=process_id, workflow_id=workflow_id)
         self.logger.info("Loaded %s ingestion config row(s)", len(configs))
         for config in configs:
-            result = self._process_config(config, ingest_stg_only=ingest_stg_only)
+            result = self._process_config(
+                config,
+                ingest_stg_only=ingest_stg_only,
+                force_all_us_dates_to_au=force_all_us_dates_to_au,
+            )
             summary.files_processed += result.files_processed
             summary.files_failed += result.files_failed
             summary.rows_loaded += result.rows_loaded
@@ -522,7 +527,11 @@ class IngestionEngine:
         return summary
 
     def _process_config(
-        self, config: IngestionConfig, *, ingest_stg_only: bool = False
+        self,
+        config: IngestionConfig,
+        *,
+        ingest_stg_only: bool = False,
+        force_all_us_dates_to_au: bool = False,
     ) -> ProcessResult:
         effective_stg_only = self._effective_stg_only(config, ingest_stg_only)
         self.logger.info(
@@ -655,6 +664,7 @@ class IngestionEngine:
                     force_append=force_append_for_file,
                     audit_id=audit_id,
                     ingest_stg_only=ingest_stg_only,
+                    force_all_us_dates_to_au=force_all_us_dates_to_au,
                 )
                 result.files_processed += 1
                 result.rows_loaded += row_count
@@ -749,6 +759,7 @@ class IngestionEngine:
         force_append: bool = False,
         audit_id: Optional[int] = None,
         ingest_stg_only: bool = False,
+        force_all_us_dates_to_au: bool = False,
     ) -> int:
         lower_name = file_name.lower()
         source_kind = self._resolve_source_kind(file_name)
@@ -768,6 +779,7 @@ class IngestionEngine:
                 load_strategy=resolved_load_strategy,
                 audit_id=audit_id,
                 ingest_stg_only=ingest_stg_only,
+                force_all_us_dates_to_au=force_all_us_dates_to_au,
             )
 
         if lower_name.endswith(".parquet") and getattr(
@@ -826,7 +838,10 @@ class IngestionEngine:
             else []
         )
         dataframe = self._normalize_dataframe(
-            dataframe, source_kind=source_kind, destination_columns=destination_columns
+            dataframe,
+            source_kind=source_kind,
+            destination_columns=destination_columns,
+            force_all_us_dates_to_au=force_all_us_dates_to_au,
         )
         self._capture_memory_peak_mb()
 
@@ -875,6 +890,7 @@ class IngestionEngine:
         load_strategy: Optional[str] = None,
         audit_id: Optional[int] = None,
         ingest_stg_only: bool = False,
+        force_all_us_dates_to_au: bool = False,
     ) -> int:
         buffer = self.sharepoint_client.download_file_to_buffer(server_relative_url)
         self._capture_memory_peak_mb()
@@ -883,6 +899,7 @@ class IngestionEngine:
             buffer,
             config,
             destination_columns,
+            force_all_us_dates_to_au=force_all_us_dates_to_au,
         )
         chunk_iter = iter_csv_chunks_from_buffer(
             buffer,
@@ -947,6 +964,7 @@ class IngestionEngine:
                 apply_ingestion_metadata=self._apply_ingestion_metadata,
                 normalize_dataframe=self._normalize_dataframe,
                 date_order_hints=csv_date_order_hints,
+                force_all_us_dates_to_au=force_all_us_dates_to_au,
             )
             self._capture_memory_peak_mb()
 
@@ -1320,6 +1338,7 @@ class IngestionEngine:
         source_kind: str,
         destination_columns: list[dict],
         date_order_hints: Optional[dict[str, bool | None]] = None,
+        force_all_us_dates_to_au: bool = False,
     ) -> pd.DataFrame:
         normalized = dataframe.copy()
         normalized.columns = [str(col).strip() for col in normalized.columns]
@@ -1337,7 +1356,8 @@ class IngestionEngine:
             )
         dt_cols = destination_datetime_columns(destination_columns)
         for source_col in normalized.columns:
-            if source_col.strip().lower() not in dt_cols:
+            source_key = source_col.strip().lower()
+            if source_key not in dt_cols:
                 continue
             # Pass-through guard: if ANY non-null value in the column cannot be
             # parsed as a date (e.g. "Withdrawal due 01-Jul-26 00:00"), leave the
@@ -1345,11 +1365,16 @@ class IngestionEngine:
             # text+date columns by silently dropping the free-text rows as NaT.
             if column_contains_non_date_text(normalized[source_col]):
                 continue
+            date_order_hint = (date_order_hints or {}).get(source_key)
+            if source_kind == "csv" and force_all_us_dates_to_au:
+                # Forced CSV mode means the source export is known to be US-style
+                # month/day/year even when every value is ambiguous (e.g. 1/5/2026).
+                date_order_hint = False
             normalized[source_col] = convert_series_to_datetime(
                 series=normalized[source_col],
                 source_kind=source_kind,
                 column_name=source_col,
-                date_order_hint=(date_order_hints or {}).get(source_col.strip().lower()),
+                date_order_hint=date_order_hint,
             )
         return normalized
 
@@ -1358,6 +1383,8 @@ class IngestionEngine:
         buffer,
         config: IngestionConfig,
         destination_columns: list[dict],
+        *,
+        force_all_us_dates_to_au: bool = False,
     ) -> dict[str, bool | None]:
         """Scan the full CSV once and infer date order for datetime columns.
 
@@ -1409,7 +1436,17 @@ class IngestionEngine:
                         "or MM-dd-yyyy/MM/dd/yyyy form. "
                         f"Samples: {samples}"
                     )
-                hints[key] = evidence.resolve_dayfirst(column_name=key)
+                if force_all_us_dates_to_au:
+                    if evidence.dmy_hints:
+                        raise ValueError(
+                            f"Invalid CSV date values in datetime column '{key}' for "
+                            "--force-all-us-dates-to-au. Found value(s) where the first "
+                            "date component is greater than 12, so they cannot be valid "
+                            "US MM/dd/yyyy dates."
+                        )
+                    hints[key] = False if evidence.values_count else None
+                else:
+                    hints[key] = evidence.resolve_dayfirst(column_name=key)
             return hints
         finally:
             try:

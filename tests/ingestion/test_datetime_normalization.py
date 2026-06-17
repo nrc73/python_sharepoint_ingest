@@ -56,6 +56,29 @@ def test_csv_datetime_column_infers_ambiguous_values_from_unambiguous_us_hints()
     assert str(normalized.loc[1, "txn_date"]) == "2026-04-15 00:00:00"
 
 
+def test_csv_datetime_column_force_all_us_dates_to_au_overrides_ambiguous_default() -> None:
+    engine = make_engine()
+    source = pd.DataFrame({"txn_date": ["1/5/2026", "2/5/2026"]})
+    dest_cols = [{"column_name": "txn_date", "data_type": "datetime"}]
+
+    default_normalized = engine._normalize_dataframe(
+        source, source_kind="csv", destination_columns=dest_cols
+    )
+    forced_normalized = engine._normalize_dataframe(
+        source,
+        source_kind="csv",
+        destination_columns=dest_cols,
+        force_all_us_dates_to_au=True,
+    )
+
+    # Default ambiguous-only CSV dates remain AU/DMY for backward compatibility.
+    assert str(default_normalized.loc[0, "txn_date"].date()) == "2026-05-01"
+    assert str(default_normalized.loc[1, "txn_date"].date()) == "2026-05-02"
+    # Forced mode treats the same CSV strings as known US source dates.
+    assert str(forced_normalized.loc[0, "txn_date"].date()) == "2026-01-05"
+    assert str(forced_normalized.loc[1, "txn_date"].date()) == "2026-02-05"
+
+
 def test_csv_datetime_column_rejects_conflicting_au_and_us_hints() -> None:
     engine = make_engine()
     source = pd.DataFrame({"txn_date": ["15/04/2026", "4/16/2026"]})

@@ -25,6 +25,7 @@ Usage (DEV only)
                                            [--no-profile]
                                            [--padding 0.20]
                                            [--csv-mapping-rows]
+                                           [--force-all-us-dates-to-au]
 """
 
 from __future__ import annotations
@@ -248,7 +249,11 @@ def _decimal_type_for_values(values: pd.Series) -> str:
     return f"DECIMAL:{precision}:{observed_scale}"
 
 
-def _infer_datetime_text_type(str_vals: pd.Series) -> str | None:
+def _infer_datetime_text_type(
+    str_vals: pd.Series,
+    *,
+    force_all_us_dates_to_au: bool = False,
+) -> str | None:
     """Infer DATE/DATETIME2 for consistently formatted CSV-style text values."""
     normalized = str_vals.astype(str).str.strip()
     normalized = normalized[normalized != ""]
@@ -261,8 +266,14 @@ def _infer_datetime_text_type(str_vals: pd.Series) -> str | None:
     evidence = collect_csv_date_order_evidence(parse_values)
     if evidence.invalid_samples or evidence.values_count == 0:
         return None
+    if force_all_us_dates_to_au and evidence.dmy_hints:
+        return None
     try:
-        dayfirst_hint = evidence.resolve_dayfirst(column_name=str(str_vals.name or ""))
+        dayfirst_hint = (
+            False
+            if force_all_us_dates_to_au
+            else evidence.resolve_dayfirst(column_name=str(str_vals.name or ""))
+        )
         parsed = convert_series_to_datetime(
             parse_values,
             source_kind="csv",
@@ -292,7 +303,7 @@ def _parse_decimal_raw_type(t: str) -> tuple[int, int] | None:
     return None
 
 
-def _infer_series(series: pd.Series) -> str:
+def _infer_series(series: pd.Series, *, force_all_us_dates_to_au: bool = False) -> str:
     """Return narrowest raw SQL type for a pandas Series.
 
     VARCHAR is returned as ``VARCHAR:<n>`` and DECIMAL as ``DECIMAL:<p>:<s>``
@@ -327,7 +338,10 @@ def _infer_series(series: pd.Series) -> str:
         return f"VARCHAR:{int(str_vals.str.len().max())}"
     # Try datetime
     try:
-        inferred_datetime = _infer_datetime_text_type(str_vals)
+        inferred_datetime = _infer_datetime_text_type(
+            str_vals,
+            force_all_us_dates_to_au=force_all_us_dates_to_au,
+        )
         if inferred_datetime:
             return inferred_datetime
     except Exception:
@@ -419,8 +433,18 @@ def _finalize_type(raw: str, padding: float = 0.20) -> str:
 # Profiling: read file bytes → {column: raw_type}
 # ---------------------------------------------------------------------------
 
-def _profile_df(df: pd.DataFrame) -> dict[str, str]:
-    return {str(col): _infer_series(df[col]) for col in df.columns}
+def _profile_df(
+    df: pd.DataFrame,
+    *,
+    force_all_us_dates_to_au: bool = False,
+) -> dict[str, str]:
+    return {
+        str(col): _infer_series(
+            df[col],
+            force_all_us_dates_to_au=force_all_us_dates_to_au,
+        )
+        for col in df.columns
+    }
 
 
 def _merge_profiles(base: dict[str, str], new: dict[str, str]) -> dict[str, str]:
@@ -1110,7 +1134,12 @@ def _map_pk_columns_to_destination(
     return [column_mapping.get(str(col), str(col)) for col in pk_columns]
 
 
-def _build_profile_candidate(sp, fi) -> _ProfileCandidate | None:
+def _build_profile_candidate(
+    sp,
+    fi,
+    *,
+    force_all_us_dates_to_au: bool = False,
+) -> _ProfileCandidate | None:
     try:
         print("    [excel] method=binary-download: starting" if _is_excel(fi.name) else "    [download] starting")
         raw = sp.download_file_to_bytes(fi.server_relative_url)
@@ -1128,6 +1157,7 @@ def _build_profile_candidate(sp, fi) -> _ProfileCandidate | None:
 
     file_kind = _file_kind_from_name(fi.name)
     any_excel = file_kind == "excel"
+    force_us_dates_for_file = force_all_us_dates_to_au and file_kind == "csv"
     combined_profile: dict[str, str] = {}
     full_frames: list[pd.DataFrame] = []
 
@@ -1137,7 +1167,10 @@ def _build_profile_candidate(sp, fi) -> _ProfileCandidate | None:
             local["excel_tab_name"] = sheet_key
         local["source_file_name"] = fi.name
         full_frames.append(local)
-        prof = _profile_df(local.drop(columns=["source_file_name", "excel_tab_name"], errors="ignore"))
+        prof = _profile_df(
+            local.drop(columns=["source_file_name", "excel_tab_name"], errors="ignore"),
+            force_all_us_dates_to_au=force_us_dates_for_file,
+        )
         combined_profile = _merge_profiles(combined_profile, prof)
 
     normalized_business_columns = tuple(_normalize_business_col_name(c) for c in combined_profile.keys())
@@ -1484,6 +1517,7 @@ def discover(
     no_profile: bool = False,
     padding: float = 0.20,
     csv_mapping_rows_only: bool = False,
+    force_all_us_dates_to_au: bool = False,
 ) -> None:
     def _status(*args, **kwargs) -> None:
         if not csv_mapping_rows_only:
@@ -1642,6 +1676,7 @@ def discover(
                 _build_profile_candidate,
                 sp,
                 fi,
+                force_all_us_dates_to_au=force_all_us_dates_to_au,
             )
             if cand is not None:
                 candidates.append(cand)
@@ -1742,6 +1777,16 @@ def _parse(argv=None):
         dest="csv_mapping_rows_only",
         help="Print only generated CSV mapping rows; omit normal SQL/recommendation output.",
     )
+    p.add_argument(
+        "--force-all-us-dates-to-au",
+        action="store_true",
+        default=False,
+        dest="force_all_us_dates_to_au",
+        help=(
+            "CSV only: treat all ambiguous numeric CSV dates as US month/day/year "
+            "source values while profiling destination date/datetime types."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -1754,4 +1799,5 @@ if __name__ == "__main__":
         no_profile=args.no_profile,
         padding=args.padding,
         csv_mapping_rows_only=args.csv_mapping_rows_only,
+        force_all_us_dates_to_au=args.force_all_us_dates_to_au,
     )

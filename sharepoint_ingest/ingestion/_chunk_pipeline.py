@@ -30,6 +30,7 @@ def prepare_ingestion_chunk(
     apply_ingestion_metadata: Callable[..., pd.DataFrame],
     normalize_dataframe: Callable[..., pd.DataFrame],
     date_order_hints: Optional[dict[str, bool | None]] = None,
+    force_all_us_dates_to_au: bool = False,
 ) -> pd.DataFrame:
     """Apply the common transform/enrichment/normalisation sequence to a chunk."""
     prepared = apply_column_mapping(dataframe, config)
@@ -47,6 +48,8 @@ def prepare_ingestion_chunk(
     }
     if date_order_hints is not None:
         normalize_kwargs["date_order_hints"] = date_order_hints
+    if source_kind == "csv" and force_all_us_dates_to_au:
+        normalize_kwargs["force_all_us_dates_to_au"] = True
     return normalize_dataframe(prepared, **normalize_kwargs)
 
 

@@ -44,6 +44,11 @@ def test_parser_accepts_ingest_stg_only_flag() -> None:
     assert args.ingest_stg_only is True
 
 
+def test_parser_accepts_force_all_us_dates_to_au_flag() -> None:
+    args = build_argument_parser().parse_args(["--force-all-us-dates-to-au"])
+    assert args.force_all_us_dates_to_au is True
+
+
 def test_parser_accepts_supress_warnings_flag() -> None:
     args = build_argument_parser().parse_args(["--supress-warnings"])
     assert args.supress_warnings is True
