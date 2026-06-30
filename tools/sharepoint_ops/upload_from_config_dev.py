@@ -41,7 +41,7 @@ RETIRED_E2E_FOLDERS = (
 
 def _resolve_sharepoint_credentials(env_name: str) -> tuple[str, str, str]:
     settings = load_settings(env_override=env_name)
-    provider = maybe_build_provider(settings.key_vault)
+    provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
     if provider is not None:
         return provider.get_sharepoint_credentials(env_name)
 
@@ -160,7 +160,7 @@ def _artifact_candidates() -> list[Path]:
 def main() -> int:
     env_name = "dev"
     settings = load_settings(env_override=env_name)
-    provider = maybe_build_provider(settings.key_vault)
+    provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
     client_id, client_secret, tenant_id = _resolve_sharepoint_credentials(env_name)
 
     settings = _resolve_database_names(settings, provider, logging.getLogger(__name__))

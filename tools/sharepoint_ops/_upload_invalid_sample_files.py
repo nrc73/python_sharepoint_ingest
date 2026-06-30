@@ -51,7 +51,7 @@ def upload_file(sp: SharePointClient, local_path: Path, folder_server_relative_u
 
 def main() -> int:
     settings = load_settings(env_override="dev")
-    provider = maybe_build_provider(settings.key_vault)
+    provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
 
     if provider is not None:
         client_id, client_secret, tenant_id = provider.get_sharepoint_credentials("dev")

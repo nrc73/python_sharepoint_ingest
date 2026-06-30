@@ -10,7 +10,7 @@ from sharepoint_ingest.sharepoint_client import SharePointClient
 from sharepoint_ingest.sql_client import SqlClient
 
 settings = load_settings(env_override="dev")
-provider = maybe_build_provider(settings.key_vault)
+provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
 cid, cs, tid = provider.get_sharepoint_credentials("dev") if provider else (
     os.getenv("SHAREPOINT_CLIENT_ID", ""), os.getenv("SHAREPOINT_CLIENT_SECRET", ""), os.getenv("SHAREPOINT_TENANT_ID", ""))
 

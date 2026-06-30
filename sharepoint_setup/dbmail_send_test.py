@@ -46,7 +46,7 @@ def _resolve_sql_client(env_name: str) -> SqlClient:
     auth_mode = sql_settings.auth_mode
 
     if not is_integrated_auth_mode(auth_mode):
-        provider = maybe_build_provider(settings.key_vault)
+        provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
         if provider is not None:
             username, password = provider.get_sql_credentials(env_name)
             sql_settings = replace(sql_settings, username=username, password=password)

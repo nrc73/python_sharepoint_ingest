@@ -48,6 +48,19 @@ class KeyVaultSettings:
 
 
 @dataclass
+class AzureAuthSettings:
+    """Settings controlling Azure authentication for Key Vault access.
+
+    Supports multiple auth methods (az_cli, env_cert, env_secret, cert_store,
+    auto) and secure secret storage options (keyring, DPAPI file, plain env var).
+    """
+    auth_method: str
+    allow_interactive_browser: bool
+    cert_thumbprint: Optional[str]
+    env_name: str = ""
+
+
+@dataclass
 class SharePointSettings:
     site_url: str
     admin_url: Optional[str]
@@ -87,6 +100,7 @@ class AppSettings:
     sharepoint: SharePointSettings
     email: EmailSettings
     graph_excel_extraction_mode: str = "binary_only"
+    azure_auth: Optional[AzureAuthSettings] = None
 
 
 def _sql_host_for_env(env_name: str) -> str:
@@ -151,6 +165,39 @@ def _resource_group_for_env(env_name: str) -> Optional[str]:
         or os.getenv("AZURE_RESOURCE_GROUP")
         or None
     )
+
+
+def _azure_auth_method_for_env(env_name: str) -> str:
+    env_key = env_name.upper().strip()
+    return (
+        os.getenv(f"AZURE_AUTH_METHOD_{env_key}")
+        or os.getenv("AZURE_AUTH_METHOD")
+        or "auto"
+    ).strip().lower()
+
+
+def _azure_auth_interactive_for_env(env_name: str) -> bool:
+    """Return whether browser auth is allowed for Azure SDK auth.
+
+    Defaults to False for all environments to avoid hangs in service-account
+    / scheduler / SSIS contexts.  Developers can explicitly opt in with
+    AZURE_AUTH_INTERACTIVE_BROWSER[_ENV]=1.
+    """
+    env_key = env_name.upper().strip()
+    raw = os.getenv(f"AZURE_AUTH_INTERACTIVE_BROWSER_{env_key}") or os.getenv(
+        "AZURE_AUTH_INTERACTIVE_BROWSER"
+    )
+    return _as_bool(raw, default=False)
+
+
+def _azure_cert_thumbprint_for_env(env_name: str) -> Optional[str]:
+    env_key = env_name.upper().strip()
+    value = (
+        os.getenv(f"AZURE_CLIENT_CERTIFICATE_THUMBPRINT_{env_key}")
+        or os.getenv("AZURE_CLIENT_CERTIFICATE_THUMBPRINT")
+        or ""
+    ).strip()
+    return value or None
 
 
 def _key_vault_url_for_env(env_name: str, vault_name: str) -> str:
@@ -257,6 +304,13 @@ def load_settings(env_override: Optional[str] = None) -> AppSettings:
         ),
     )
 
+    azure_auth_settings = AzureAuthSettings(
+        auth_method=_azure_auth_method_for_env(env_name),
+        allow_interactive_browser=_azure_auth_interactive_for_env(env_name),
+        cert_thumbprint=_azure_cert_thumbprint_for_env(env_name),
+        env_name=env_name,
+    )
+
     sharepoint_settings = SharePointSettings(
         site_url=_sharepoint_url_for_env(env_name),
         admin_url=os.getenv("SHAREPOINT_ADMIN_URL_PROD"),
@@ -289,6 +343,7 @@ def load_settings(env_override: Optional[str] = None) -> AppSettings:
         sql_stg=stg_settings,      # staging DB
         sql_int=int_settings,      # integrated/destination DB
         key_vault=key_vault_settings,
+        azure_auth=azure_auth_settings,
         sharepoint=sharepoint_settings,
         email=email_settings,
     )

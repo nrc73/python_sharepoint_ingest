@@ -1413,7 +1413,7 @@ def _build_sp_client(settings) -> tuple["SharePointClient", object]:
     from dataclasses import replace as _dc_replace
 
     env_name = str(getattr(settings, "env_name", "") or "")
-    provider = maybe_build_provider(settings.key_vault)
+    provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
     if provider is not None:
         print("  [auth] Fetching SharePoint credentials from Key Vault …")
         client_id, client_secret, tenant_id = provider.get_sharepoint_credentials(env_name)
@@ -1539,7 +1539,7 @@ def discover(
     # load_settings() leaves sql.database blank — it must be injected from KV.
     import logging as _logging
     _logger = _logging.getLogger(__name__)
-    provider = maybe_build_provider(settings.key_vault)
+    provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
     settings = _resolve_database_names(settings, provider, _logger)
 
     # Resolve SQL credentials for credential-based auth modes.

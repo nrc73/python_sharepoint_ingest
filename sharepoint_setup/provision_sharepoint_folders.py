@@ -41,7 +41,7 @@ def _resolve_target_envs(env_arg: str) -> list[str]:
 
 def _resolve_credentials(env_name: str) -> tuple[str, str, str]:
     settings = load_settings(env_override=env_name)
-    provider = maybe_build_provider(settings.key_vault)
+    provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
 
     if provider is not None:
         return provider.get_sharepoint_credentials(env_name)

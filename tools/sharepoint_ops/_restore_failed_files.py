@@ -10,7 +10,7 @@ from sharepoint_ingest.keyvault_client import maybe_build_provider
 from sharepoint_ingest.sharepoint_client import SharePointClient
 
 settings = load_settings(env_override="dev")
-provider = maybe_build_provider(settings.key_vault)
+provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
 client_id, client_secret, tenant_id = provider.get_sharepoint_credentials("dev")
 sp = SharePointClient(settings.sharepoint.site_url, client_id, client_secret, tenant_id)
 

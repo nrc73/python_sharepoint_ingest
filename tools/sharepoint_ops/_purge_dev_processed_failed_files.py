@@ -32,7 +32,7 @@ def delete_file(sp: SharePointClient, file_server_relative_url: str) -> None:
 
 def main() -> int:
     settings = load_settings(env_override="dev")
-    provider = maybe_build_provider(settings.key_vault)
+    provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
 
     if provider is not None:
         client_id, client_secret, tenant_id = provider.get_sharepoint_credentials("dev")

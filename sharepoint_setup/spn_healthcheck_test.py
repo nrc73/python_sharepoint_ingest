@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from azure.identity import ClientSecretCredential, DefaultAzureCredential
+from azure.identity import ClientSecretCredential
 from azure.keyvault.secrets import SecretClient
 
 # Ensure the project root is importable when running as:
@@ -23,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from sharepoint_ingest.config import load_settings
+from sharepoint_ingest._azure_credential import build_azure_credential
 from sharepoint_ingest.keyvault_client import maybe_build_provider
 from sharepoint_ingest.notifications import EmailNotifier
 
@@ -156,10 +157,15 @@ def _validate_client_secret_token(tenant_id: str, client_id: str, client_secret:
     credential.get_token(scope)
 
 
-def _get_keyvault_secret_expiry(vault_url: str, secret_name: str) -> Optional[datetime]:
+def _get_keyvault_secret_expiry(settings, secret_name: str) -> Optional[datetime]:
+    vault_url = settings.key_vault.vault_url
     if not vault_url:
         return None
-    credential = DefaultAzureCredential(exclude_interactive_browser_credential=False)
+    auth = getattr(settings, "azure_auth", None)
+    credential = build_azure_credential(
+        auth_method=auth.auth_method if auth else None,
+        allow_interactive_browser=auth.allow_interactive_browser if auth else False,
+    )
     client = SecretClient(vault_url=vault_url, credential=credential)
     secret = client.get_secret(secret_name)
     return secret.properties.expires_on
@@ -269,7 +275,7 @@ def _build_notification_body(
 def _run_for_env(env_name: str, args: argparse.Namespace) -> EnvCheckSummary:
     now_utc = datetime.now(timezone.utc)
     settings = load_settings(env_override=env_name)
-    provider = maybe_build_provider(settings.key_vault)
+    provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
     detail_lines: list[str] = []
     simulate_expiry_days: Optional[int] = args.simulate_expiry_days
 
@@ -387,7 +393,7 @@ def _run_for_env(env_name: str, args: argparse.Namespace) -> EnvCheckSummary:
 
     try:
         kv_expiry = _get_keyvault_secret_expiry(
-            vault_url=settings.key_vault.vault_url,
+            settings=settings,
             secret_name=settings.key_vault.client_secret_secret_name,
         )
         if kv_expiry is not None:

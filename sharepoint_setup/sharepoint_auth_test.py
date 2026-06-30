@@ -159,7 +159,7 @@ def _format_sharepoint_error(exc: Exception) -> str:
 
 def _run_for_env(env_name: str, default_folder: str | None) -> None:
     settings = load_settings(env_override=env_name)
-    provider = maybe_build_provider(settings.key_vault)
+    provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
 
     if provider is None:
         vault_url = settings.key_vault.vault_url or settings.key_vault.vault_name

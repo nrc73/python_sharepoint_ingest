@@ -5,16 +5,27 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 
-from sharepoint_ingest.config import KeyVaultSettings
+from sharepoint_ingest._azure_credential import build_azure_credential
+from sharepoint_ingest.config import AzureAuthSettings, KeyVaultSettings
 
 
 class KeyVaultSecretProvider:
-    def __init__(self, settings: KeyVaultSettings):
+    def __init__(
+        self,
+        settings: KeyVaultSettings,
+        azure_auth: Optional[AzureAuthSettings] = None,
+    ):
         self._settings = settings
-        self._credential = DefaultAzureCredential(exclude_interactive_browser_credential=False)
+        self._azure_auth = azure_auth
+        self._credential = build_azure_credential(
+            auth_method=azure_auth.auth_method if azure_auth else None,
+            allow_interactive_browser=(
+                azure_auth.allow_interactive_browser if azure_auth else False
+            ),
+            env_name=getattr(azure_auth, "env_name", None),
+        )
         self._client = SecretClient(vault_url=settings.vault_url, credential=self._credential)
 
     def get_secret(self, secret_name: str) -> str:
@@ -102,7 +113,10 @@ class KeyVaultSecretProvider:
         }
 
 
-def maybe_build_provider(settings: KeyVaultSettings) -> Optional[KeyVaultSecretProvider]:
+def maybe_build_provider(
+    settings: KeyVaultSettings,
+    azure_auth: Optional[AzureAuthSettings] = None,
+) -> Optional[KeyVaultSecretProvider]:
     if not settings.vault_url:
         return None
-    return KeyVaultSecretProvider(settings)
+    return KeyVaultSecretProvider(settings, azure_auth=azure_auth)

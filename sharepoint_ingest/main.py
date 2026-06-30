@@ -112,7 +112,7 @@ def _validate_dry_run_destinations(configs, stg_sql_client, int_sql_client, *, i
 
 
 def _resolve_sharepoint_credentials(settings, provider=None) -> tuple[str, str, str]:
-    provider = provider or maybe_build_provider(settings.key_vault)
+    provider = provider or maybe_build_provider(settings.key_vault, getattr(settings, "azure_auth", None))
     if provider is not None:
         return provider.get_sharepoint_credentials(settings.env_name)
 
@@ -193,7 +193,7 @@ def _resolve_sql_settings(settings, provider=None):
     if is_integrated_auth_mode(auth_mode):
         return sql_settings
 
-    provider = provider or maybe_build_provider(settings.key_vault)
+    provider = provider or maybe_build_provider(settings.key_vault, getattr(settings, "azure_auth", None))
     if provider is not None:
         try:
             username, password = provider.get_sql_credentials(settings.env_name)
@@ -225,7 +225,7 @@ def run(argv: Optional[list[str]] = None) -> int:
     logger.info("Starting SharePoint ingestion in env='%s'", settings.env_name)
 
     try:
-        provider = maybe_build_provider(settings.key_vault)
+        provider = maybe_build_provider(settings.key_vault, getattr(settings, "azure_auth", None))
 
         # Resolve database names from Key Vault — mandatory, no env-var fallback.
         settings = _resolve_database_names(settings, provider, logger)

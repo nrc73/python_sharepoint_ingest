@@ -15,7 +15,7 @@ def decode_jwt(token: str) -> dict:
     return json.loads(base64.b64decode(p).decode())
 
 settings = load_settings(env_override="dev")
-provider = maybe_build_provider(settings.key_vault)
+provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
 client_id, client_secret, tenant_id = provider.get_sharepoint_credentials("dev")
 
 msal_app = ConfidentialClientApplication(

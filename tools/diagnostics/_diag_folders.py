@@ -13,7 +13,7 @@ for env_name in ("dev", "prod"):
         from sharepoint_ingest.sharepoint_client import SharePointClient
 
         settings = load_settings(env_override=env_name)
-        provider = maybe_build_provider(settings.key_vault)
+        provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
         client_id, client_secret, tenant_id = provider.get_sharepoint_credentials(env_name)
         site_url = settings.sharepoint.site_url
         print(f"Site URL: {site_url}", flush=True)

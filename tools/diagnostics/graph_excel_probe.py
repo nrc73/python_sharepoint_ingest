@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     settings = load_settings(env_override=args.env)
-    provider = maybe_build_provider(settings.key_vault)
+    provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
     client_id, client_secret, tenant_id = _resolve_sharepoint_credentials(settings, provider)
 
     if not settings.sharepoint.site_url:

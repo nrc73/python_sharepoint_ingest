@@ -11,7 +11,7 @@ from sharepoint_ingest.config import load_settings
 from sharepoint_ingest.keyvault_client import maybe_build_provider
 
 settings = load_settings(env_override="dev")
-provider = maybe_build_provider(settings.key_vault)
+provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
 client_id, client_secret, tenant_id = provider.get_sharepoint_credentials("dev")
 
 def decode(token: str) -> dict:

@@ -34,7 +34,7 @@ def _run_for_env(env_name: str) -> None:
             "Run 'python tools/bootstrap_env.py' or set KEY_VAULT_URL in .env."
         )
 
-    provider = KeyVaultSecretProvider(settings.key_vault)
+    provider = KeyVaultSecretProvider(settings.key_vault, settings.azure_auth)
     client_id, client_secret, tenant_id = provider.get_sharepoint_credentials(env_name)
 
     print(f"[{env_name}] Key Vault secret retrieval successful")

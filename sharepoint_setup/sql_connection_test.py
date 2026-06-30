@@ -32,7 +32,7 @@ def _run_for_env(env_name: str) -> None:
     settings = load_settings(env_override=env_name)
     auth_mode = settings.sql.auth_mode
 
-    provider = maybe_build_provider(settings.key_vault)
+    provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
 
     # ── Resolve SQL server + database names from Key Vault ──────────────────
     kv_server: str | None = None

@@ -143,7 +143,7 @@ def _upload_in_chunks(upload_url: str, data: bytes, max_retries: int = 5) -> Non
 
 def main() -> int:
     settings = load_settings(env_override="dev")
-    provider = maybe_build_provider(settings.key_vault)
+    provider = maybe_build_provider(settings.key_vault, settings.azure_auth)
     if provider:
         cid, cs, tid = provider.get_sharepoint_credentials("dev")
     else:

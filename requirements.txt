@@ -1,5 +1,7 @@
 azure-identity>=1.17.1
 azure-keyvault-secrets>=4.8.0
+cryptography>=42.0.0
+keyring>=25.0.0
 msal>=1.29.0
 requests>=2.32.3
 pandas>=2.2.2
